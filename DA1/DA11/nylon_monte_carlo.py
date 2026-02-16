@@ -47,6 +47,8 @@ import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 from matplotlib.patches import Patch
 import warnings
+import subprocess
+import os
 warnings.filterwarnings("ignore")
 
 # ── Reproducibility ────────────────────────────────────────────────────────────
@@ -380,8 +382,25 @@ fig.suptitle(
     color="white", fontsize=15, fontweight="bold", y=0.98
 )
 
-plt.savefig("/Users/santiagoriverabarbosa/Desktop/Darden/Q3/DA1/MonteCarloSimulator/nylon_monte_carlo.png",
+plt.savefig(".santi-heskey/Darden/main/DA1/DA11/nylon_monte_carlo.png",
             dpi=150, bbox_inches="tight", facecolor=fig.get_facecolor())
 print("\nChart saved to: nylon_monte_carlo.png")
 plt.close()
 print("Done.")
+
+# ── Auto-push outputs to GitHub ───────────────────────────────────────────────
+REPO_PATH   = ".santi-heskey/Darden/main/DA1/DA11"   # change this to your local repo path if needed
+OUTPUT_FILES = [
+    "nylon_monte_carlo_v2.py",
+    "nylon_monte_carlo_v2.png"
+]
+
+os.chdir(REPO_PATH)
+
+for f in OUTPUT_FILES:
+    subprocess.run(["git", "add", f], check=True)
+
+subprocess.run(["git", "commit", "-m", "Auto: update Monte Carlo simulation outputs"], check=True)
+subprocess.run(["git", "push", "origin", "main"], check=True)   # change branch if needed
+
+print("Outputs pushed to GitHub.")
