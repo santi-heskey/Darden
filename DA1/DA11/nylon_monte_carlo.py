@@ -381,10 +381,11 @@ fig.suptitle(
     f"n = {N_TRIALS:,} trials  |  Recommendation: {rec}",
     color="white", fontsize=15, fontweight="bold", y=0.98
 )
+script_dir = os.path.dirname(os.path.abspath(__file__))
+out_path   = os.path.join(script_dir, "nylon_monte_carlo_v2.png")
+plt.savefig(out_path, dpi=150, bbox_inches="tight", facecolor=fig.get_facecolor())
 
-plt.savefig(".santi-heskey/Darden/main/DA1/DA11/nylon_monte_carlo.png",
-            dpi=150, bbox_inches="tight", facecolor=fig.get_facecolor())
-print("\nChart saved to: nylon_monte_carlo.png")
+print("\nChart saved to:", out_path)
 plt.close()
 print("Done.")
 
