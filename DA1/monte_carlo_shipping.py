@@ -31,10 +31,28 @@ TD17_BALTIC_SPOT_RATE = 40000
 TD19_MED_SPOT_RATE = 45000
 
 # Leg 2: Destination to Next Port (Laden - earning revenue)
-MED_TO_UK_DAYS = 9
-BALTIC_TO_ANOTHER_BALTIC_DAYS = 3
-BALTIC_TO_UK_DAYS = 5
-BALTIC_TO_MED_DAYS = 15
+MED_TO_UK_DAYS = 10.0855615
+MED_TO_MED_DAYS = 6.615789474
+BALTIC_TO_ANOTHER_BALTIC_DAYS = 3.82799634
+BALTIC_TO_UK_DAYS = 8.229845626
+BALTIC_TO_MED_DAYS = 116.12011173
+
+# --- Onward Leg Probability Distributions ---
+# Rows = chosen voyage (Baltic or Med)
+# Columns = next destination (Med, UK Continent, Baltic)
+# Source: empirical distribution data
+
+BALTIC_ONWARD_PROBS = {
+    'med':    0.09,   # 9%  -> Mediterranean
+    'uk':     0.62,   # 62% -> UK Continent
+    'baltic': 0.29,   # 29% -> Another Baltic
+}
+
+MED_ONWARD_PROBS = {
+    'med':    0.72,   # 72% -> Mediterranean
+    'uk':     0.28,   # 28% -> UK Continent
+    'baltic': 0.00,   # 0%  -> Baltic
+}
 
 # --- Simulation Core ---
 
@@ -44,48 +62,80 @@ def get_rate_multipliers(n_trials):
         return np.random.uniform(RATE_MULTIPLIER_MIN, RATE_MULTIPLIER_MAX, n_trials)
     elif DISTRIBUTION_TYPE == 'normal':
         multipliers = np.random.normal(NORMAL_DIST_MEAN, NORMAL_DIST_STD_DEV, n_trials)
-        # Clip at 0 to prevent negative rates, which are not realistic.
         return np.clip(multipliers, 0, None)
     else:
         raise ValueError("Unsupported DISTRIBUTION_TYPE. Choose 'uniform' or 'normal'.")
 
+def sample_laden_days(probs, n_trials, laden_days_map):
+    """
+    For each trial, randomly selects an onward leg duration based on
+    the provided probability distribution.
+
+    Args:
+        probs (dict): {'med': p1, 'uk': p2, 'baltic': p3}
+        n_trials (int): Number of simulation trials.
+        laden_days_map (dict): {'med': days, 'uk': days, 'baltic': days}
+
+    Returns:
+        np.ndarray: Array of laden voyage days, one per trial.
+    """
+    keys = list(probs.keys())
+    weights = [probs[k] for k in keys]
+    days_options = [laden_days_map[k] for k in keys]
+
+    # Draw a destination index for each trial according to the probability weights
+    chosen_indices = np.random.choice(len(keys), size=n_trials, p=weights)
+    return np.array([days_options[i] for i in chosen_indices])
+
 # --- Voyage Scenarios ---
 
 def simulate_mediterranean_voyage(n_trials):
-    """Simulates the entire UK -> Med -> UK voyage."""
+    """
+    Simulates the UK -> Med voyage.
+    Onward leg is sampled from the Med probability distribution:
+      72% -> Med, 28% -> UK Continent, 0% -> Baltic
+    """
     print("Simulating Mediterranean voyage...")
     rate_multipliers = get_rate_multipliers(n_trials)
-    
     simulated_rates = TD19_MED_SPOT_RATE * rate_multipliers
-    total_revenue = simulated_rates * MED_TO_UK_DAYS
-    
-    total_days = UK_TO_MED_DAYS + MED_TO_UK_DAYS
+
+    laden_days_map = {
+        'med':    MED_TO_MED_DAYS,
+        'uk':     MED_TO_UK_DAYS,
+        'baltic': 0,  # 0% probability, value irrelevant
+    }
+    laden_days = sample_laden_days(MED_ONWARD_PROBS, n_trials, laden_days_map)
+
+    total_revenue = simulated_rates * laden_days
+    total_days = UK_TO_MED_DAYS + laden_days
     total_cost = DAILY_OPERATING_COST * total_days
-    
     total_profit = total_revenue - total_cost
+
     return total_profit / total_days
 
 def simulate_baltic_voyage(n_trials):
     """
-    Simulates the UK -> Baltic voyage, analyzing all three potential onward legs.
+    Simulates the UK -> Baltic voyage.
+    Onward leg is sampled from the Baltic probability distribution:
+      9% -> Med, 62% -> UK Continent, 29% -> Another Baltic
     """
-    print("Simulating Baltic voyage (analyzing 3 sub-routes)...")
+    print("Simulating Baltic voyage...")
     rate_multipliers = get_rate_multipliers(n_trials)
     simulated_rates = TD17_BALTIC_SPOT_RATE * rate_multipliers
 
-    def calculate_avg_profit(laden_days):
-        total_revenue = simulated_rates * laden_days
-        total_days = UK_TO_BALTIC_DAYS + laden_days
-        total_cost = DAILY_OPERATING_COST * total_days
-        total_profit = total_revenue - total_cost
-        return total_profit / total_days if total_days > 0 else np.zeros(n_trials)
+    laden_days_map = {
+        'med':    BALTIC_TO_MED_DAYS,
+        'uk':     BALTIC_TO_UK_DAYS,
+        'baltic': BALTIC_TO_ANOTHER_BALTIC_DAYS,
+    }
+    laden_days = sample_laden_days(BALTIC_ONWARD_PROBS, n_trials, laden_days_map)
 
-    outcomes_to_baltic = calculate_avg_profit(BALTIC_TO_ANOTHER_BALTIC_DAYS)
-    outcomes_to_uk = calculate_avg_profit(BALTIC_TO_UK_DAYS)
-    outcomes_to_med = calculate_avg_profit(BALTIC_TO_MED_DAYS)
-    
-    # For each trial, find the maximum average daily profit among the three options
-    return np.maximum.reduce([outcomes_to_baltic, outcomes_to_uk, outcomes_to_med])
+    total_revenue = simulated_rates * laden_days
+    total_days = UK_TO_BALTIC_DAYS + laden_days
+    total_cost = DAILY_OPERATING_COST * total_days
+    total_profit = total_revenue - total_cost
+
+    return total_profit / total_days
 
 # --- Reporting & Analysis ---
 
@@ -93,7 +143,6 @@ def generate_report(baltic_results, med_results):
     """
     Generates a detailed report comparing the simulation results of the two voyages.
     """
-    # (The implementation of this function is unchanged)
     def get_stats(name, results):
         return {
             "name": name,
@@ -111,6 +160,9 @@ def generate_report(baltic_results, med_results):
 --- Decision Analysis Report (Source: {DISTRIBUTION_TYPE.capitalize()} Distribution) ---
 
 Based on {len(baltic_results):,} simulations:
+Onward leg destinations sampled from empirical probability distributions.
+  Baltic onward:      Med {BALTIC_ONWARD_PROBS['med']*100:.0f}% | UK {BALTIC_ONWARD_PROBS['uk']*100:.0f}% | Baltic {BALTIC_ONWARD_PROBS['baltic']*100:.0f}%
+  Mediterranean onward: Med {MED_ONWARD_PROBS['med']*100:.0f}% | UK {MED_ONWARD_PROBS['uk']*100:.0f}% | Baltic {MED_ONWARD_PROBS['baltic']*100:.0f}%
 
 --------------------------------------------------
 Metric                 | {baltic_stats['name']:<20} | {med_stats['name']}
@@ -135,7 +187,7 @@ Probability of Profit  | {baltic_stats['profit_prob']:>18.1f}% | {med_stats['pro
             f"This option has a higher expected average daily profit (${med_stats['mean_profit']-baltic_stats['mean_profit']:,.2f} more per day)."
         )
     report += recommendation
-    
+
     risk_diff_threshold = 500
     if abs(baltic_stats['std_dev'] - med_stats['std_dev']) > risk_diff_threshold:
         if baltic_stats['std_dev'] > med_stats['std_dev']:
@@ -149,29 +201,25 @@ def generate_visual(baltic_results, med_results, output_filename="shipping_analy
     Generates and saves a visualization of the simulation results.
     """
     print(f"Generating visual report and saving to {output_filename}...")
-    
+
     plt.style.use('seaborn-v0_8-whitegrid')
     fig, ax = plt.subplots(figsize=(12, 7))
 
-    # Plotting the distributions
     sns.histplot(data={'Baltic': baltic_results, 'Mediterranean': med_results}, ax=ax, kde=True, bins=50)
-    
-    # Getting stats for annotations
+
     baltic_mean = baltic_results.mean()
     med_mean = med_results.mean()
-    
-    # Adding vertical lines for the means
+
     ax.axvline(baltic_mean, color=sns.color_palette()[0], linestyle='--', label=f'Baltic Mean: ${baltic_mean:,.2f}')
     ax.axvline(med_mean, color=sns.color_palette()[1], linestyle='--', label=f'Med Mean: ${med_mean:,.2f}')
-    
-    ax.set_title('Distribution of Average Daily Profit', fontsize=16)
+
+    ax.set_title('Distribution of Average Daily Profit\n(Onward legs sampled from empirical probabilities)', fontsize=16)
     ax.set_xlabel('Average Daily Profit ($)', fontsize=12)
     ax.set_ylabel('Frequency (Number of Trials)', fontsize=12)
     ax.legend()
-    
-    # Improve formatting
+
     ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'${x:,.0f}'))
-    
+
     plt.tight_layout()
     plt.savefig(output_filename)
     print("Visual report saved successfully.")
@@ -184,15 +232,13 @@ def run_voyage_simulation(n_trials=N_TRIALS):
     """
     print("--- Starting shipping voyage analysis ---")
     print(f"Running {n_trials:,} simulations with a '{DISTRIBUTION_TYPE}' rate distribution.")
-    
+
     baltic_results = simulate_baltic_voyage(n_trials)
     med_results = simulate_mediterranean_voyage(n_trials)
 
-    # Generate and print the text report
     report = generate_report(baltic_results, med_results)
     print(report)
-    
-    # Generate and save the visual report
+
     generate_visual(baltic_results, med_results)
 
 if __name__ == "__main__":
