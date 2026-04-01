@@ -1,0 +1,183 @@
+"""
+Black-Scholes: European Call Option vs RSU Payoff Comparison
+============================================================
+No dividends. European exercise only.
+"""
+
+import numpy as np
+from scipy.stats import norm
+from datetime import datetime
+import matplotlib.pyplot as plt
+import matplotlib.ticker as mticker
+
+
+# ─────────────────────────────────────────────
+#  PARAMETER INPUTS
+# ─────────────────────────────────────────────
+
+print("\n" + "=" * 52)
+print("   Black-Scholes: Option vs RSU Payoff Analyzer")
+print("=" * 52)
+
+S     = float(input("\n Current stock price (S)         : 203.81 "))
+K     = float(input(" Exercise / strike price (K)     :  264.953"))
+r     = float(input(" Risk-free rate, annual (e.g. 0.05 for 5%): .027"))
+sigma = float(input(" Volatility, annual  (e.g. 0.25 for 25%): .2 "))
+
+today_str    = input(" Today's date        (YYYY-MM-DD) : 2016-03-04 ")
+maturity_str = input(" Maturity date       (YYYY-MM-DD) : 2022-12-31 ")
+
+today    = datetime.strptime(today_str,    "%Y-%m-%d")
+maturity = datetime.strptime(maturity_str, "%Y-%m-%d")
+T        = (maturity - today).days / 365.0
+
+if T <= 0:
+    raise ValueError("Maturity date must be in the future.")
+
+print(f"\n → Time to maturity: {T:.4f} years  ({(maturity - today).days} days)\n")
+
+
+# ─────────────────────────────────────────────
+#  BLACK-SCHOLES PRICER
+# ─────────────────────────────────────────────
+
+def black_scholes_call(S, K, T, r, sigma):
+    """European call, no dividends."""
+    d1 = (np.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * np.sqrt(T))
+    d2 = d1 - sigma * np.sqrt(T)
+
+    price = S * norm.cdf(d1) - K * np.exp(-r * T) * norm.cdf(d2)
+
+    delta = norm.cdf(d1)
+    gamma = norm.pdf(d1) / (S * sigma * np.sqrt(T))
+    vega  = S * norm.pdf(d1) * np.sqrt(T) / 100
+    theta = (-(S * norm.pdf(d1) * sigma) / (2 * np.sqrt(T))
+             - r * K * np.exp(-r * T) * norm.cdf(d2)) / 365
+    rho   = K * T * np.exp(-r * T) * norm.cdf(d2) / 100
+
+    greeks = {
+        "Delta": delta,
+        "Gamma": gamma,
+        "Vega (per 1% vol)":  vega,
+        "Theta (per day)":    theta,
+        "Rho (per 1% rate)":  rho,
+    }
+    return price, d1, d2, greeks
+
+
+option_price, d1, d2, greeks = black_scholes_call(S, K, T, r, sigma)
+
+
+# ─────────────────────────────────────────────
+#  PRINT RESULTS
+# ─────────────────────────────────────────────
+
+print("─" * 52)
+print(f"  INPUTS")
+print(f"    Current price (S)  : ${S:,.2f}")
+print(f"    Strike price  (K)  : ${K:,.2f}")
+print(f"    Risk-free rate (r) : {r*100:.2f}%")
+print(f"    Volatility (σ)     : {sigma*100:.2f}%")
+print(f"    Time to maturity   : {T:.4f} yrs")
+print("─" * 52)
+print(f"  BLACK-SCHOLES OUTPUTS")
+print(f"    d1                 :  {d1:.4f}")
+print(f"    d2                 :  {d2:.4f}")
+print(f"    N(d1)              :  {norm.cdf(d1):.4f}")
+print(f"    N(d2)              :  {norm.cdf(d2):.4f}")
+print(f"    ► Call Option Price:  ${option_price:.4f}")
+print("─" * 52)
+print(f"  GREEKS")
+for name, val in greeks.items():
+    print(f"    {name:<22}: {val:+.6f}")
+print("─" * 52)
+
+# RSU comparison: value = S_T (current price, assumed as reference)
+rsu_value = S
+print(f"\n  GRANT VALUE COMPARISON (at today's price)")
+print(f"    RSU value (1 share)      : ${rsu_value:.4f}")
+print(f"    Call option (BS) value   : ${option_price:.4f}")
+print(f"    Options needed to match  :  {rsu_value / option_price:.2f}x RSU count")
+print("─" * 52 + "\n")
+
+
+# ─────────────────────────────────────────────
+#  PAYOFF CHART: OPTION vs RSU at EXPIRY
+# ─────────────────────────────────────────────
+
+S_range = np.linspace(S * 0.2, S * 2.2, 500)
+
+# At expiry: option payoff = max(S_T - K, 0)
+option_payoff = np.maximum(S_range - K, 0)
+
+# RSU payoff = S_T (linear, always positive)
+rsu_payoff = S_range
+
+# Net profit (subtract cost of grant at today's price)
+option_profit = option_payoff  # for exec: no upfront cost, just forfeited if OTM
+rsu_profit    = rsu_payoff     # RSU: exec gets the share value regardless
+
+fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+fig.patch.set_facecolor("#0f1117")
+
+colors = {
+    "option": "#00d4aa",
+    "rsu":    "#f7931e",
+    "strike": "#ff4c4c",
+    "current": "#aaaaaa",
+    "zero":   "#444444",
+}
+
+for ax in axes:
+    ax.set_facecolor("#1a1d27")
+    ax.tick_params(colors="#aaaaaa")
+    ax.spines["bottom"].set_color("#333")
+    ax.spines["left"].set_color("#333")
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"${x:,.0f}"))
+    ax.xaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"${x:,.0f}"))
+
+# ── Left: Payoff at expiry ──────────────────────
+ax1 = axes[0]
+ax1.plot(S_range, option_payoff, color=colors["option"], lw=2.2, label="Call Option payoff")
+ax1.plot(S_range, rsu_payoff,    color=colors["rsu"],    lw=2.2, label="RSU payoff")
+ax1.axvline(K, color=colors["strike"],  lw=1.2, ls="--", label=f"Strike K = ${K:,.0f}")
+ax1.axvline(S, color=colors["current"], lw=1.0, ls=":",  label=f"Today's S = ${S:,.0f}")
+ax1.axhline(0, color=colors["zero"],    lw=0.8)
+ax1.set_title("Payoff at Expiry", color="white", fontsize=13, pad=12)
+ax1.set_xlabel("Stock price at expiry (Sₜ)", color="#aaaaaa")
+ax1.set_ylabel("Payoff ($)", color="#aaaaaa")
+ax1.legend(facecolor="#1a1d27", edgecolor="#333", labelcolor="white", fontsize=9)
+
+# ── Right: Incremental advantage of options ─────
+ax2 = axes[1]
+advantage = option_payoff - option_price - (rsu_payoff - S)
+# i.e., (option net profit) minus (RSU net profit), per-unit, normalized to same grant value
+
+# Scale: assume company grants enough options to match RSU value
+n_options = rsu_value / option_price   # options per RSU
+scaled_option_profit = np.maximum(S_range - K, 0) * n_options
+scaled_rsu_profit    = S_range
+
+ax2.plot(S_range, scaled_option_profit, color=colors["option"], lw=2.2,
+         label=f"Options ×{n_options:.1f} (same grant value)")
+ax2.plot(S_range, scaled_rsu_profit,    color=colors["rsu"],    lw=2.2, label="1 RSU")
+ax2.axvline(K, color=colors["strike"],  lw=1.2, ls="--", label=f"Strike K = ${K:,.0f}")
+ax2.axvline(S, color=colors["current"], lw=1.0, ls=":",  label=f"Today's S = ${S:,.0f}")
+ax2.axhline(0, color=colors["zero"],    lw=0.8)
+ax2.set_title("Equal Grant Value Comparison", color="white", fontsize=13, pad=12)
+ax2.set_xlabel("Stock price at expiry (Sₜ)", color="#aaaaaa")
+ax2.set_ylabel("Executive payoff ($)", color="#aaaaaa")
+ax2.legend(facecolor="#1a1d27", edgecolor="#333", labelcolor="white", fontsize=9)
+
+plt.suptitle(
+    f"European Call Option vs RSU  |  S=${S:,.0f}  K=${K:,.0f}  σ={sigma*100:.0f}%  r={r*100:.0f}%  T={T:.2f}yr",
+    color="white", fontsize=12, y=1.01
+)
+plt.tight_layout()
+
+outfile = "bs_rsu_payoff.png"
+plt.savefig(outfile, dpi=150, bbox_inches="tight", facecolor=fig.get_facecolor())
+print(f"Chart saved → {outfile}\n")
+plt.show()
