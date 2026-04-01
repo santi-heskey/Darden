@@ -15,24 +15,48 @@ import matplotlib.ticker as mticker
 #  PARAMETER INPUTS
 # ─────────────────────────────────────────────
 
+def get_float(prompt, positive=True):
+    """Prompt until user enters a valid number. Strips commas and $ signs."""
+    while True:
+        raw = input(prompt).strip().replace(",", "").replace("$", "")
+        try:
+            val = float(raw)
+            if positive and val <= 0:
+                print("   ✗ Must be a positive number. Try again.")
+                continue
+            return val
+        except ValueError:
+            print(f"   ✗ '{raw}' is not a valid number. Try again.")
+
+def get_date(prompt):
+    """Prompt until user enters a valid YYYY-MM-DD date."""
+    while True:
+        raw = input(prompt).strip()
+        try:
+            return datetime.strptime(raw, "%Y-%m-%d")
+        except ValueError:
+            print("   ✗ Invalid date. Use YYYY-MM-DD format (e.g. 2026-03-31).")
+
 print("\n" + "=" * 52)
 print("   Black-Scholes: Option vs RSU Payoff Analyzer")
 print("=" * 52)
+print("   Enter numbers without commas (e.g. 1000 not 1,000)")
+print("   Rates as decimals           (e.g. 0.05  for 5%)")
+print("=" * 52)
 
-S     = float(input("\n Current stock price (S)         : 203.81 "))
-K     = float(input(" Exercise / strike price (K)     :  264.953"))
-r     = float(input(" Risk-free rate, annual (e.g. 0.05 for 5%): .027"))
-sigma = float(input(" Volatility, annual  (e.g. 0.25 for 25%): .2 "))
+S     = get_float("\n Current stock price (S)              : 203.81 ")
+K     = get_float(" Exercise / strike price (K)          : 264.953 ")
+r     = get_float(" Risk-free rate, annual (0.05 = 5%)   : .027 ", positive=False)
+sigma = get_float(" Volatility, annual    (0.25 = 25%)   : .2 ")
 
-today_str    = input(" Today's date        (YYYY-MM-DD) : 2016-03-04 ")
-maturity_str = input(" Maturity date       (YYYY-MM-DD) : 2022-12-31 ")
-
-today    = datetime.strptime(today_str,    "%Y-%m-%d")
-maturity = datetime.strptime(maturity_str, "%Y-%m-%d")
+today    = get_date(" Today's date          (YYYY-MM-DD)   : 2016-03-04 ")
+maturity = get_date(" Maturity date         (YYYY-MM-DD)   : 2022-03-04 ")
 T        = (maturity - today).days / 365.0
 
-if T <= 0:
-    raise ValueError("Maturity date must be in the future.")
+while T <= 0:
+    print("   ✗ Maturity must be after today. Try again.")
+    maturity = get_date(" Maturity date         (YYYY-MM-DD)   : ")
+    T        = (maturity - today).days / 365.0
 
 print(f"\n → Time to maturity: {T:.4f} years  ({(maturity - today).days} days)\n")
 
