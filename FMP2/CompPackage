@@ -1,0 +1,400 @@
+"""
+Executive Compensation: Interactive Payoff Diagrams
+====================================================
+Controls:
+  - RSU count    : slider  +  text box (type & press Enter)
+  - Option count : slider  +  text box (type & press Enter)
+  - % allocation : 4 sliders (Salary / RSU / Options / Other non-equity)
+                   shown as a live stacked bar — highlights if ≠ 100%
+
+Panels:
+  1. Salary          — flat
+  2. RSU             — linear (per share)
+  3. ATM Call Option — hockey stick (per option)
+  4. Your Package    — salary + n_rsu×RSU + n_opt×ATM Call  ← LIVE
+"""
+
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.ticker as mticker
+import matplotlib.patches as mpatches
+from matplotlib.widgets import Slider, TextBox
+
+
+# ─────────────────────────────────────────────
+#  INPUT HELPERS
+# ─────────────────────────────────────────────
+
+def get_float(prompt, positive=True):
+    while True:
+        raw = input(prompt).strip().replace(",", "").replace("$", "")
+        try:
+            val = float(raw)
+            if positive and val <= 0:
+                print("   ✗ Must be a positive number. Try again.")
+                continue
+            return val
+        except ValueError:
+            print(f"   ✗ '{raw}' is not a valid number. Try again.")
+
+def get_int(prompt):
+    while True:
+        raw = input(prompt).strip().replace(",", "")
+        try:
+            val = int(raw)
+            if val < 0:
+                print("   ✗ Must be zero or positive. Try again.")
+                continue
+            return val
+        except ValueError:
+            print(f"   ✗ '{raw}' is not a valid integer. Try again.")
+
+
+# ─────────────────────────────────────────────
+#  INPUTS
+# ─────────────────────────────────────────────
+
+print("\n" + "=" * 54)
+print("   Executive Compensation — Interactive Payoffs")
+print("=" * 54)
+
+salary     = get_float("\n Annual salary ($)               : ")
+S          = get_float(" Current / grant stock price ($) : ")
+K          = S
+n_rsu_init = get_int(  " Initial number of RSUs          : ")
+n_opt_init = get_int(  " Initial number of options       : ")
+
+rsu_max = max(n_rsu_init * 5, 500)
+opt_max = max(n_opt_init * 5, 500)
+
+print(f"\n → Strike (ATM): ${K:,.2f}")
+print(" → Use sliders OR type a number in the box and press Enter.\n")
+
+
+# ─────────────────────────────────────────────
+#  PAYOFF ARRAYS
+# ─────────────────────────────────────────────
+
+S_range      = np.linspace(0, S * 2.5, 600)
+pay_salary   = np.full_like(S_range, salary)
+pay_rsu_unit = S_range
+pay_opt_unit = np.maximum(S_range - K, 0)
+
+def package_payoff(n_rsu, n_opt):
+    return salary + n_rsu * pay_rsu_unit + n_opt * pay_opt_unit
+
+
+# ─────────────────────────────────────────────
+#  COLOURS
+# ─────────────────────────────────────────────
+
+BG         = "#0f1117"
+PANEL_BG   = "#1a1d27"
+GRID_CLR   = "#2a2d3a"
+AXIS_CLR   = "#555555"
+TEXT_CLR   = "#cccccc"
+CURR_CLR   = "#555555"
+CTRL_BG    = "#1e2130"
+
+C_SALARY   = "#4fc3f7"   # sky blue
+C_RSU      = "#f7931e"   # orange
+C_OPTION   = "#2ecc71"   # green
+C_PACKAGE  = "#e056fd"   # purple
+C_OTHER    = "#aaaaaa"   # grey
+
+ALLOC_COLORS = [C_SALARY, C_RSU, C_OPTION, C_OTHER]
+ALLOC_LABELS = ["Salary", "RSU", "Options", "Other Non-Equity"]
+
+
+# ─────────────────────────────────────────────
+#  FIGURE LAYOUT
+# ─────────────────────────────────────────────
+#
+#  y fractions (bottom → top):
+#   0.00–0.04  alloc bar display
+#   0.04–0.20  allocation % sliders  (4 rows)
+#   0.20–0.26  RSU / Option controls (slider + textbox)
+#   0.26–0.28  divider gap
+#   0.28–1.00  4 chart panels
+
+fig = plt.figure(figsize=(16, 13))
+fig.patch.set_facecolor(BG)
+
+# ── Chart panels ────────────────────────────
+ax1 = fig.add_axes([0.05, 0.54, 0.42, 0.42])
+ax2 = fig.add_axes([0.55, 0.54, 0.42, 0.42])
+ax3 = fig.add_axes([0.05, 0.28, 0.42, 0.22])
+ax4 = fig.add_axes([0.55, 0.28, 0.42, 0.22])
+
+# ── Quantity controls row (RSU + Options) ────
+#    Each: label | slider | textbox
+ax_sl_rsu  = fig.add_axes([0.10, 0.233, 0.28, 0.018], facecolor=CTRL_BG)
+ax_tb_rsu  = fig.add_axes([0.41, 0.228, 0.07, 0.025], facecolor=CTRL_BG)
+ax_sl_opt  = fig.add_axes([0.58, 0.233, 0.28, 0.018], facecolor=CTRL_BG)
+ax_tb_opt  = fig.add_axes([0.89, 0.228, 0.07, 0.025], facecolor=CTRL_BG)
+
+sl_rsu = Slider(ax_sl_rsu, "RSUs     ", 0, rsu_max, valinit=n_rsu_init,
+                valstep=1, color=C_RSU)
+sl_opt = Slider(ax_sl_opt, "Options  ", 0, opt_max, valinit=n_opt_init,
+                valstep=1, color=C_OPTION)
+tb_rsu = TextBox(ax_tb_rsu, "", initial=str(n_rsu_init),
+                 color=CTRL_BG, hovercolor="#2a2e45")
+tb_opt = TextBox(ax_tb_opt, "", initial=str(n_opt_init),
+                 color=CTRL_BG, hovercolor="#2a2e45")
+
+for sl in [sl_rsu, sl_opt]:
+    sl.label.set_color(TEXT_CLR)
+    sl.valtext.set_color(TEXT_CLR)
+for tb in [tb_rsu, tb_opt]:
+    tb.text_disp.set_color("white")
+
+fig.text(0.085, 0.244, "RSUs:", color=TEXT_CLR, fontsize=9, ha="right")
+fig.text(0.385, 0.244, "↩", color="#888", fontsize=9)
+fig.text(0.555, 0.244, "Options:", color=TEXT_CLR, fontsize=9, ha="right")
+fig.text(0.885, 0.244, "↩", color="#888", fontsize=9)
+fig.text(0.50,  0.260, "— Unit Controls —", color="#666",
+         fontsize=8, ha="center", style="italic")
+
+# ── Allocation % sliders ─────────────────────
+alloc_init = [40.0, 25.0, 25.0, 10.0]   # must sum to 100
+alloc_axes, alloc_sliders = [], []
+
+slider_y = [0.195, 0.170, 0.145, 0.120]
+alloc_names = ["Salary %   ", "RSU %      ", "Options %  ", "Other %    "]
+
+for i in range(4):
+    aax = fig.add_axes([0.10, slider_y[i], 0.80, 0.016], facecolor=CTRL_BG)
+    asl = Slider(aax, alloc_names[i], 0, 100,
+                 valinit=alloc_init[i], valstep=0.5, color=ALLOC_COLORS[i])
+    asl.label.set_color(TEXT_CLR)
+    asl.valtext.set_color(ALLOC_COLORS[i])
+    alloc_axes.append(aax)
+    alloc_sliders.append(asl)
+
+fig.text(0.50, 0.215, "— Compensation Mix —", color="#666",
+         fontsize=8, ha="center", style="italic")
+
+# ── Allocation stacked bar ────────────────────
+ax_bar = fig.add_axes([0.10, 0.058, 0.80, 0.045], facecolor=CTRL_BG)
+ax_bar.set_xlim(0, 100)
+ax_bar.set_ylim(0, 1)
+ax_bar.axis("off")
+
+# Seed bar patches
+bar_patches = []
+left = 0
+for i in range(4):
+    w = alloc_init[i]
+    p = mpatches.FancyBboxPatch((left, 0.1), w, 0.8,
+                                 boxstyle="square,pad=0",
+                                 fc=ALLOC_COLORS[i], ec="none", alpha=0.85)
+    ax_bar.add_patch(p)
+    bar_patches.append(p)
+    left += w
+
+bar_total_text = ax_bar.text(50, -0.5, "", ha="center", va="top",
+                              fontsize=9, color=TEXT_CLR)
+bar_legend_text = ax_bar.text(50, 1.6, "", ha="center", va="bottom",
+                               fontsize=8, color="#aaaaaa")
+fig.text(0.50, 0.107, "Allocation Bar", color="#555",
+         fontsize=7.5, ha="center", style="italic")
+
+
+# ─────────────────────────────────────────────
+#  AXIS STYLE HELPER
+# ─────────────────────────────────────────────
+
+def style_ax(ax, ylabel="Payoff ($)"):
+    ax.set_facecolor(PANEL_BG)
+    ax.grid(True, color=GRID_CLR, lw=0.5, zorder=0)
+    for sp in ["top", "right"]:
+        ax.spines[sp].set_visible(False)
+    for sp in ["bottom", "left"]:
+        ax.spines[sp].set_color(AXIS_CLR)
+    ax.tick_params(colors=TEXT_CLR, labelsize=8.5)
+    ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"${x:,.0f}"))
+    ax.xaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"${x:,.0f}"))
+    ax.axhline(0, color=AXIS_CLR, lw=0.8, zorder=1)
+    ax.axvline(S, color=CURR_CLR, lw=1.0, ls=":", zorder=2, label=f"S₀=${S:,.0f}")
+    ax.set_xlabel("Stock price at expiry (Sₜ)", color=TEXT_CLR, fontsize=8.5)
+    ax.set_ylabel(ylabel, color=TEXT_CLR, fontsize=8.5)
+
+
+# ─────────────────────────────────────────────
+#  STATIC PANELS 1–3
+# ─────────────────────────────────────────────
+
+style_ax(ax1)
+ax1.plot(S_range, pay_salary, color=C_SALARY, lw=2.8, zorder=3,
+         label=f"Salary = ${salary:,.0f}")
+ax1.fill_between(S_range, 0, pay_salary, color=C_SALARY, alpha=0.07)
+ax1.set_title("① Salary", color="white", fontsize=12, fontweight="bold", pad=8)
+ax1.text(0.5, 1.01, "Fixed — no link to stock performance",
+         transform=ax1.transAxes, ha="center", fontsize=8, color="#777", style="italic")
+ax1.legend(facecolor=PANEL_BG, edgecolor="#333", labelcolor=TEXT_CLR, fontsize=8)
+
+style_ax(ax2)
+ax2.plot(S_range, pay_rsu_unit, color=C_RSU, lw=2.8, zorder=3, label="RSU (1 share)")
+ax2.fill_between(S_range, 0, pay_rsu_unit, color=C_RSU, alpha=0.07)
+ax2.set_title("② Restricted Stock Grant — Per Share", color="white",
+              fontsize=12, fontweight="bold", pad=8)
+ax2.text(0.5, 1.01, "Payoff = Sₜ   (you feel gains AND losses)",
+         transform=ax2.transAxes, ha="center", fontsize=8, color="#777", style="italic")
+ax2.legend(facecolor=PANEL_BG, edgecolor="#333", labelcolor=TEXT_CLR, fontsize=8)
+
+style_ax(ax3)
+ax3.plot(S_range, pay_opt_unit, color=C_OPTION, lw=2.8, zorder=3, label=f"Call (K=${K:,.0f})")
+ax3.fill_between(S_range, 0, pay_opt_unit, color=C_OPTION, alpha=0.07)
+ax3.axvline(K, color=C_OPTION, lw=0.9, ls="--", alpha=0.45, label=f"K=${K:,.0f} (ATM)")
+ax3.set_title("③ ATM Call Option — Per Option", color="white",
+              fontsize=12, fontweight="bold", pad=8)
+ax3.text(0.5, 1.01, f"Payoff = max(Sₜ − K, 0)",
+         transform=ax3.transAxes, ha="center", fontsize=8, color="#777", style="italic")
+ax3.legend(facecolor=PANEL_BG, edgecolor="#333", labelcolor=TEXT_CLR, fontsize=8)
+
+
+# ─────────────────────────────────────────────
+#  INTERACTIVE PANEL 4
+# ─────────────────────────────────────────────
+
+style_ax(ax4)
+ax4.axvline(K, color=C_OPTION, lw=0.9, ls="--", alpha=0.35)
+
+pay0 = package_payoff(n_rsu_init, n_opt_init)
+line_pkg,  = ax4.plot(S_range, pay0, color=C_PACKAGE, lw=2.8, zorder=3)
+fill_ref   = [ax4.fill_between(S_range, salary, pay0,
+                               color=C_PACKAGE, alpha=0.08, zorder=1)]
+ax4.axhline(salary, color=C_SALARY, lw=1.1, ls="--", alpha=0.6,
+            label=f"Salary = ${salary:,.0f}")
+
+title4 = ax4.set_title("", color="white", fontsize=11, fontweight="bold", pad=8)
+sub4   = ax4.text(0.5, 1.01, "", transform=ax4.transAxes,
+                  ha="center", fontsize=8, color="#777", style="italic")
+ax4.legend(facecolor=PANEL_BG, edgecolor="#333", labelcolor=TEXT_CLR, fontsize=8)
+
+def refresh_title(n_rsu, n_opt):
+    rsu_val = n_rsu * S
+    opt_val = n_opt * S * 0.1   # rough proxy for display only
+    title4.set_text(f"④ Your Package  —  {n_rsu:,} RSUs  +  {n_opt:,} Options  +  Salary")
+    sub4.set_text(f"Salary ${salary:,.0f}  +  {n_rsu:,} × RSU  +  {n_opt:,} × ATM Call")
+
+refresh_title(n_rsu_init, n_opt_init)
+
+
+# ─────────────────────────────────────────────
+#  ALLOCATION BAR UPDATER
+# ─────────────────────────────────────────────
+
+def refresh_alloc_bar():
+    vals = [sl.val for sl in alloc_sliders]
+    total = sum(vals)
+
+    left = 0
+    for i, p in enumerate(vals):
+        bar_patches[i].set_x(left)
+        w = (p / total * 100) if total > 0 else 0
+        bar_patches[i].set_width(w)
+        left += w
+
+    color = "#2ecc71" if abs(total - 100) < 0.6 else "#e74c3c"
+    bar_total_text.set_text(f"Total: {total:.1f}%")
+    bar_total_text.set_color(color)
+
+    parts = [f"{ALLOC_LABELS[i]}: {vals[i]:.1f}%" for i in range(4)]
+    bar_legend_text.set_text("   |   ".join(parts))
+    bar_legend_text.set_color("#aaaaaa")
+
+refresh_alloc_bar()
+
+
+# ─────────────────────────────────────────────
+#  UPDATE FUNCTIONS
+# ─────────────────────────────────────────────
+
+_updating = [False]   # guard against recursive slider↔textbox callbacks
+
+def update_package(val=None):
+    if _updating[0]:
+        return
+    n_rsu = int(sl_rsu.val)
+    n_opt = int(sl_opt.val)
+    pay   = package_payoff(n_rsu, n_opt)
+
+    line_pkg.set_ydata(pay)
+    fill_ref[0].remove()
+    fill_ref[0] = ax4.fill_between(S_range, salary, pay,
+                                   color=C_PACKAGE, alpha=0.08, zorder=1)
+
+    ymax = max(pay.max(), salary) * 1.10
+    ymin = min(pay.min(), 0)
+    ax4.set_ylim(ymin, ymax)
+    refresh_title(n_rsu, n_opt)
+    fig.canvas.draw_idle()
+
+def on_sl_rsu(val):
+    _updating[0] = True
+    tb_rsu.set_val(str(int(val)))
+    _updating[0] = False
+    update_package()
+
+def on_sl_opt(val):
+    _updating[0] = True
+    tb_opt.set_val(str(int(val)))
+    _updating[0] = False
+    update_package()
+
+def on_tb_rsu(text):
+    if _updating[0]:
+        return
+    try:
+        v = max(0, min(int(float(text.replace(",", ""))), rsu_max))
+        _updating[0] = True
+        sl_rsu.set_val(v)
+        tb_rsu.set_val(str(v))
+        _updating[0] = False
+        update_package()
+    except ValueError:
+        pass
+
+def on_tb_opt(text):
+    if _updating[0]:
+        return
+    try:
+        v = max(0, min(int(float(text.replace(",", ""))), opt_max))
+        _updating[0] = True
+        sl_opt.set_val(v)
+        tb_opt.set_val(str(v))
+        _updating[0] = False
+        update_package()
+    except ValueError:
+        pass
+
+def on_alloc(val):
+    refresh_alloc_bar()
+    fig.canvas.draw_idle()
+
+sl_rsu.on_changed(on_sl_rsu)
+sl_opt.on_changed(on_sl_opt)
+tb_rsu.on_submit(on_tb_rsu)
+tb_opt.on_submit(on_tb_opt)
+for asl in alloc_sliders:
+    asl.on_changed(on_alloc)
+
+# Initial draw
+update_package()
+
+
+# ─────────────────────────────────────────────
+#  SUPER TITLE
+# ─────────────────────────────────────────────
+
+fig.text(0.5, 0.998,
+         f"Executive Compensation — Payoff Profiles  |  "
+         f"S₀=${S:,.0f}   K=${K:,.0f} (ATM)   Salary=${salary:,.0f}",
+         ha="center", va="top", color="white", fontsize=11, fontweight="bold")
+
+plt.savefig("comp_payoff_interactive.png", dpi=150,
+            bbox_inches="tight", facecolor=BG)
+print("Snapshot saved → comp_payoff_interactive.png")
+print("Type a number in the box + press Enter, or drag sliders.\n")
+plt.show()
