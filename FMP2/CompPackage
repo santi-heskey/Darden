@@ -1,24 +1,28 @@
 """
-Executive Compensation: Interactive Payoff Diagrams
-====================================================
-Controls:
-  - RSU count    : slider  +  text box (type & press Enter)
-  - Option count : slider  +  text box (type & press Enter)
-  - % allocation : 4 sliders (Salary / RSU / Options / Other non-equity)
-                   shown as a live stacked bar — highlights if ≠ 100%
+Executive Compensation — Full Synthesis
+(Performance-Vesting RSUs + Step-Ladder Options)
+==================================================
+RSU vesting:
+  • 3 equal tranches (1/3 of total RSUs each)
+  • Each tranche vests only if stock reaches the price target
+    of Tiers 3, 4, and 5 respectively — AND after a minimum
+    holding period (e.g. 3 years)
+  • PV per tranche = (n/3) × S × N(d1) — BS asset-or-nothing,
+    computed at the minimum holding period T_rsu
 
 Panels:
-  1. Salary          — flat
-  2. RSU             — linear (per share)
-  3. ATM Call Option — hockey stick (per option)
-  4. Your Package    — salary + n_rsu×RSU + n_opt×ATM Call  ← LIVE
+  ① Salary              — flat
+  ② RSU (step payoff)   — step function: tranche unlocks at each target
+  ③ Step-ladder options — cumulative inclusive tiers (all 5)
+  ④ Total package       — salary + other + RSU steps + option ladder
+  ⑤ Grant-date FV bar  — BS-priced options + PV-discounted RSU tranches
 """
 
 import numpy as np
+from scipy.stats import norm
+from datetime import datetime
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
-import matplotlib.patches as mpatches
-from matplotlib.widgets import Slider, TextBox
 
 
 # ─────────────────────────────────────────────
@@ -27,184 +31,238 @@ from matplotlib.widgets import Slider, TextBox
 
 def get_float(prompt, positive=True):
     while True:
-        raw = input(prompt).strip().replace(",", "").replace("$", "")
+        raw = input(prompt).strip().replace(",","").replace("$","").replace("%","")
         try:
             val = float(raw)
             if positive and val <= 0:
-                print("   ✗ Must be a positive number. Try again.")
+                print("   ✗ Must be positive. Try again.")
                 continue
             return val
         except ValueError:
             print(f"   ✗ '{raw}' is not a valid number. Try again.")
 
-def get_int(prompt):
+def get_int(prompt, min_val=0):
     while True:
-        raw = input(prompt).strip().replace(",", "")
+        raw = input(prompt).strip().replace(",","")
         try:
             val = int(raw)
-            if val < 0:
-                print("   ✗ Must be zero or positive. Try again.")
+            if val < min_val:
+                print(f"   ✗ Must be ≥ {min_val}. Try again.")
                 continue
             return val
         except ValueError:
-            print(f"   ✗ '{raw}' is not a valid integer. Try again.")
+            print(f"   ✗ Not a valid integer. Try again.")
+
+def get_date(prompt):
+    while True:
+        raw = input(prompt).strip()
+        try:
+            return datetime.strptime(raw, "%Y-%m-%d")
+        except ValueError:
+            print("   ✗ Use YYYY-MM-DD (e.g. 2026-03-31).")
 
 
 # ─────────────────────────────────────────────
 #  INPUTS
 # ─────────────────────────────────────────────
 
-print("\n" + "=" * 54)
-print("   Executive Compensation — Interactive Payoffs")
-print("=" * 54)
+print("\n" + "=" * 60)
+print("   Executive Compensation — Full Package Analyzer")
+print("=" * 60)
+print("   Rates as decimals (0.05 = 5%) | No commas needed")
+print("=" * 60)
 
-salary     = get_float("\n Annual salary ($)               : ")
-S          = get_float(" Current / grant stock price ($) : ")
-K          = S
-n_rsu_init = get_int(  " Initial number of RSUs          : ")
-n_opt_init = get_int(  " Initial number of options       : ")
+print("\n  [ CASH COMPENSATION ]")
+salary = get_float("  Annual salary ($)                : ")
+other  = get_float("  Other non-equity comp ($)        : ", positive=False)
+years  = get_float("  Compensation period (years)      : ")
 
-rsu_max = max(n_rsu_init * 5, 500)
-opt_max = max(n_opt_init * 5, 500)
+print("\n  [ EQUITY & MARKET PARAMETERS ]")
+S     = get_float("  Current stock price ($)          : ")
+r     = get_float("  Risk-free rate  (0.05 = 5%)      : ", positive=False)
+sigma = get_float("  Volatility      (0.20 = 20%)     : ")
 
-print(f"\n → Strike (ATM): ${K:,.2f}")
-print(" → Use sliders OR type a number in the box and press Enter.\n")
+print("\n  [ OPTION MATURITY ]")
+today    = get_date("  Today's date     (YYYY-MM-DD)   : ")
+maturity = get_date("  Option maturity  (YYYY-MM-DD)   : ")
+T        = (maturity - today).days / 365.0
+while T <= 0:
+    print("   ✗ Maturity must be in the future.")
+    maturity = get_date("  Option maturity  (YYYY-MM-DD)   : ")
+    T = (maturity - today).days / 365.0
+print(f"  → T = {T:.3f} years  ({(maturity - today).days} days)\n")
+
+print("  [ RSU GRANT ]")
+n_rsu   = get_int("  Total RSUs granted                : ", min_val=1)
+T_rsu   = get_float("  Minimum holding period (years)    : ")
+print(f"\n  → RSUs vest in 3 equal tranches of {n_rsu//3} ({n_rsu}/3)")
+print(f"    after {T_rsu:.1f} years, at Tier 3 / 4 / 5 stock price targets.\n")
+
+print("  [ OPTION TIERS — 5 performance targets ]")
+print(f"  Each tier: % increase over S = ${S:,.2f}")
+print("  Inclusive: hitting a higher tier unlocks all tiers below it.")
+print("  RSU tranches tied to the TOP 3 tiers (Tiers 3, 4, 5).\n")
+n_opt_per_tier = get_int("  Options per tier (same for all 5) : ", min_val=1)
+
+pcts = []
+for i in range(5):
+    p = get_float(f"  Tier {i+1} target — % increase (e.g. 10 for +10%): ")
+    pcts.append(p)
+pcts    = sorted(pcts)
+strikes = [S * (1 + p / 100) for p in pcts]
+
+
+# ─────────────────────────────────────────────
+#  BLACK-SCHOLES
+# ─────────────────────────────────────────────
+
+def bs_call(S, K, T, r, sigma):
+    d1    = (np.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * np.sqrt(T))
+    d2    = d1 - sigma * np.sqrt(T)
+    price = S * norm.cdf(d1) - K * np.exp(-r * T) * norm.cdf(d2)
+    return price, d1, d2, norm.cdf(d1), norm.cdf(d2)
+
+
+# ─────────────────────────────────────────────
+#  OPTION TIERS
+# ─────────────────────────────────────────────
+
+tiers = []
+for pct, K_i in zip(pcts, strikes):
+    price, d1, d2, Nd1, Nd2 = bs_call(S, K_i, T, r, sigma)
+    tiers.append({
+        "pct": pct, "K": K_i,
+        "bs_price": price, "grant_val": price * n_opt_per_tier,
+        "d1": d1, "d2": d2, "Nd1": Nd1, "Nd2": Nd2,
+    })
+
+total_option_gv = sum(t["grant_val"] for t in tiers)
+
+
+# ─────────────────────────────────────────────
+#  RSU — PERFORMANCE VESTING
+#  Tranches tied to Tiers 3, 4, 5 (indices 2, 3, 4)
+#  PV = (n/3) × S × N(d1)  [asset-or-nothing, BS]
+#  computed at T_rsu (minimum holding period)
+# ─────────────────────────────────────────────
+
+rsu_tier_indices = [2, 3, 4]   # Tier 3, 4, 5
+n_per_tranche    = n_rsu / 3
+
+rsu_tranches = []
+for idx in rsu_tier_indices:
+    t      = tiers[idx]
+    K_i    = t["K"]
+    _, d1_rsu, _, Nd1_rsu, Nd2_rsu = bs_call(S, K_i, T_rsu, r, sigma)
+    # Asset-or-nothing call: pays S_T if S_T ≥ K, 0 otherwise
+    # PV = n × S × N(d1)  [first term of BS, undiscounted by K]
+    pv_tranche = n_per_tranche * S * Nd1_rsu
+    rsu_tranches.append({
+        "tier":       idx + 1,
+        "pct":        t["pct"],
+        "K":          K_i,
+        "Nd1":        Nd1_rsu,
+        "Nd2":        Nd2_rsu,
+        "pv":         pv_tranche,
+    })
+
+rsu_pv    = sum(tr["pv"] for tr in rsu_tranches)
+rsu_naive = n_rsu * S
+
+cash_total = (salary + other) * years
+
+
+# ─────────────────────────────────────────────
+#  CONSOLE SUMMARY
+# ─────────────────────────────────────────────
+
+print("\n" + "=" * 72)
+print("  OPTION TIERS")
+print("=" * 72)
+print(f"  {'Tier':<6} {'Target':>7} {'Strike':>10} {'BS Price':>10} "
+      f"{'Grant Val':>12} {'Delta':>8}  RSU?")
+print("  " + "─" * 65)
+for i, t in enumerate(tiers):
+    rsu_flag = " ← RSU tranche" if i in rsu_tier_indices else ""
+    print(f"  T{i+1:<5} +{t['pct']:>5.1f}%  ${t['K']:>9,.2f} "
+          f"${t['bs_price']:>9,.4f} ${t['grant_val']:>11,.2f} "
+          f"{t['Nd1']:>8.4f}{rsu_flag}")
+print("  " + "─" * 65)
+print(f"  Total option grant value (BS)       : ${total_option_gv:>14,.2f}")
+
+print(f"\n  RSU PERFORMANCE TRANCHES  "
+      f"(min holding: {T_rsu:.1f} yr, {n_per_tranche:.0f} shares each)")
+print(f"  {'Tier':<6} {'Target':>7} {'Strike':>10} {'N(d1)':>8} "
+      f"{'N(d2)':>8} {'PV (asset-or-nothing)':>22}")
+print("  " + "─" * 68)
+for tr in rsu_tranches:
+    print(f"  T{tr['tier']:<5} +{tr['pct']:>5.1f}%  ${tr['K']:>9,.2f} "
+          f"{tr['Nd1']:>8.4f} {tr['Nd2']:>8.4f} ${tr['pv']:>21,.2f}")
+print("  " + "─" * 68)
+print(f"  Total RSU PV (asset-or-nothing)     : ${rsu_pv:>14,.2f}")
+print(f"  Undiscounted naive (n×S)            : ${rsu_naive:>14,.2f}")
+
+total_gv = cash_total + rsu_pv + total_option_gv
+print(f"\n  TOTAL PACKAGE FAIR VALUE            : ${total_gv:>14,.2f}")
+print("=" * 72 + "\n")
 
 
 # ─────────────────────────────────────────────
 #  PAYOFF ARRAYS
 # ─────────────────────────────────────────────
 
-S_range      = np.linspace(0, S * 2.5, 600)
-pay_salary   = np.full_like(S_range, salary)
-pay_rsu_unit = S_range
-pay_opt_unit = np.maximum(S_range - K, 0)
+S_range = np.linspace(0, S * 2.8, 800)
 
-def package_payoff(n_rsu, n_opt):
-    return salary + n_rsu * pay_rsu_unit + n_opt * pay_opt_unit
+pay_salary  = np.full_like(S_range, salary * years)
+pay_other   = np.full_like(S_range, other  * years)
+
+# Option payoff: cumulative step ladder
+pay_options = sum(
+    np.maximum(S_range - t["K"], 0) * n_opt_per_tier for t in tiers
+)
+
+# RSU payoff: step function — tranche activates when S_T ≥ K_i
+pay_rsu = np.zeros_like(S_range)
+for tr in rsu_tranches:
+    pay_rsu += np.where(S_range >= tr["K"], n_per_tranche * S_range, 0.0)
+
+pay_package = pay_salary + pay_other + pay_rsu + pay_options
 
 
 # ─────────────────────────────────────────────
 #  COLOURS
 # ─────────────────────────────────────────────
 
-BG         = "#0f1117"
-PANEL_BG   = "#1a1d27"
-GRID_CLR   = "#2a2d3a"
-AXIS_CLR   = "#555555"
-TEXT_CLR   = "#cccccc"
-CURR_CLR   = "#555555"
-CTRL_BG    = "#1e2130"
-
-C_SALARY   = "#4fc3f7"   # sky blue
-C_RSU      = "#f7931e"   # orange
-C_OPTION   = "#2ecc71"   # green
-C_PACKAGE  = "#e056fd"   # purple
-C_OTHER    = "#aaaaaa"   # grey
-
-ALLOC_COLORS = [C_SALARY, C_RSU, C_OPTION, C_OTHER]
-ALLOC_LABELS = ["Salary", "RSU", "Options", "Other Non-Equity"]
+BG          = "#0f1117"
+PANEL_BG    = "#1a1d27"
+GRID_CLR    = "#2a2d3a"
+AXIS_CLR    = "#555555"
+TEXT_CLR    = "#cccccc"
+CURR_CLR    = "#555555"
+C_SALARY    = "#4fc3f7"
+C_OTHER     = "#81ecec"
+C_RSU       = "#f7931e"
+C_RSU_STEP  = "#ffb347"
+C_PACKAGE   = "#e056fd"
+C_OPT_CUM   = "#00d4aa"
+TIER_COLORS = ["#e74c3c", "#e67e22", "#f1c40f", "#2ecc71", "#3498db"]
 
 
 # ─────────────────────────────────────────────
-#  FIGURE LAYOUT
+#  FIGURE
 # ─────────────────────────────────────────────
-#
-#  y fractions (bottom → top):
-#   0.00–0.04  alloc bar display
-#   0.04–0.20  allocation % sliders  (4 rows)
-#   0.20–0.26  RSU / Option controls (slider + textbox)
-#   0.26–0.28  divider gap
-#   0.28–1.00  4 chart panels
 
-fig = plt.figure(figsize=(16, 13))
+fig = plt.figure(figsize=(18, 11))
 fig.patch.set_facecolor(BG)
 
-# ── Chart panels ────────────────────────────
-ax1 = fig.add_axes([0.05, 0.54, 0.42, 0.42])
-ax2 = fig.add_axes([0.55, 0.54, 0.42, 0.42])
-ax3 = fig.add_axes([0.05, 0.28, 0.42, 0.22])
-ax4 = fig.add_axes([0.55, 0.28, 0.42, 0.22])
-
-# ── Quantity controls row (RSU + Options) ────
-#    Each: label | slider | textbox
-ax_sl_rsu  = fig.add_axes([0.10, 0.233, 0.28, 0.018], facecolor=CTRL_BG)
-ax_tb_rsu  = fig.add_axes([0.41, 0.228, 0.07, 0.025], facecolor=CTRL_BG)
-ax_sl_opt  = fig.add_axes([0.58, 0.233, 0.28, 0.018], facecolor=CTRL_BG)
-ax_tb_opt  = fig.add_axes([0.89, 0.228, 0.07, 0.025], facecolor=CTRL_BG)
-
-sl_rsu = Slider(ax_sl_rsu, "RSUs     ", 0, rsu_max, valinit=n_rsu_init,
-                valstep=1, color=C_RSU)
-sl_opt = Slider(ax_sl_opt, "Options  ", 0, opt_max, valinit=n_opt_init,
-                valstep=1, color=C_OPTION)
-tb_rsu = TextBox(ax_tb_rsu, "", initial=str(n_rsu_init),
-                 color=CTRL_BG, hovercolor="#2a2e45")
-tb_opt = TextBox(ax_tb_opt, "", initial=str(n_opt_init),
-                 color=CTRL_BG, hovercolor="#2a2e45")
-
-for sl in [sl_rsu, sl_opt]:
-    sl.label.set_color(TEXT_CLR)
-    sl.valtext.set_color(TEXT_CLR)
-for tb in [tb_rsu, tb_opt]:
-    tb.text_disp.set_color("white")
-
-fig.text(0.085, 0.244, "RSUs:", color=TEXT_CLR, fontsize=9, ha="right")
-fig.text(0.385, 0.244, "↩", color="#888", fontsize=9)
-fig.text(0.555, 0.244, "Options:", color=TEXT_CLR, fontsize=9, ha="right")
-fig.text(0.885, 0.244, "↩", color="#888", fontsize=9)
-fig.text(0.50,  0.260, "— Unit Controls —", color="#666",
-         fontsize=8, ha="center", style="italic")
-
-# ── Allocation % sliders ─────────────────────
-alloc_init = [40.0, 25.0, 25.0, 10.0]   # must sum to 100
-alloc_axes, alloc_sliders = [], []
-
-slider_y = [0.195, 0.170, 0.145, 0.120]
-alloc_names = ["Salary %   ", "RSU %      ", "Options %  ", "Other %    "]
-
-for i in range(4):
-    aax = fig.add_axes([0.10, slider_y[i], 0.80, 0.016], facecolor=CTRL_BG)
-    asl = Slider(aax, alloc_names[i], 0, 100,
-                 valinit=alloc_init[i], valstep=0.5, color=ALLOC_COLORS[i])
-    asl.label.set_color(TEXT_CLR)
-    asl.valtext.set_color(ALLOC_COLORS[i])
-    alloc_axes.append(aax)
-    alloc_sliders.append(asl)
-
-fig.text(0.50, 0.215, "— Compensation Mix —", color="#666",
-         fontsize=8, ha="center", style="italic")
-
-# ── Allocation stacked bar ────────────────────
-ax_bar = fig.add_axes([0.10, 0.058, 0.80, 0.045], facecolor=CTRL_BG)
-ax_bar.set_xlim(0, 100)
-ax_bar.set_ylim(0, 1)
-ax_bar.axis("off")
-
-# Seed bar patches
-bar_patches = []
-left = 0
-for i in range(4):
-    w = alloc_init[i]
-    p = mpatches.FancyBboxPatch((left, 0.1), w, 0.8,
-                                 boxstyle="square,pad=0",
-                                 fc=ALLOC_COLORS[i], ec="none", alpha=0.85)
-    ax_bar.add_patch(p)
-    bar_patches.append(p)
-    left += w
-
-bar_total_text = ax_bar.text(50, -0.5, "", ha="center", va="top",
-                              fontsize=9, color=TEXT_CLR)
-bar_legend_text = ax_bar.text(50, 1.6, "", ha="center", va="bottom",
-                               fontsize=8, color="#aaaaaa")
-fig.text(0.50, 0.107, "Allocation Bar", color="#555",
-         fontsize=7.5, ha="center", style="italic")
+ax1 = fig.add_subplot(2, 3, 1)
+ax2 = fig.add_subplot(2, 3, 2)
+ax3 = fig.add_subplot(2, 3, 3)
+ax4 = fig.add_subplot(2, 3, 4)
+ax5 = fig.add_subplot(2, 3, (5, 6))
 
 
-# ─────────────────────────────────────────────
-#  AXIS STYLE HELPER
-# ─────────────────────────────────────────────
-
-def style_ax(ax, ylabel="Payoff ($)"):
+def style_ax(ax):
     ax.set_facecolor(PANEL_BG)
     ax.grid(True, color=GRID_CLR, lw=0.5, zorder=0)
     for sp in ["top", "right"]:
@@ -217,184 +275,198 @@ def style_ax(ax, ylabel="Payoff ($)"):
     ax.axhline(0, color=AXIS_CLR, lw=0.8, zorder=1)
     ax.axvline(S, color=CURR_CLR, lw=1.0, ls=":", zorder=2, label=f"S₀=${S:,.0f}")
     ax.set_xlabel("Stock price at expiry (Sₜ)", color=TEXT_CLR, fontsize=8.5)
-    ax.set_ylabel(ylabel, color=TEXT_CLR, fontsize=8.5)
+    ax.set_ylabel("Payoff ($)", color=TEXT_CLR, fontsize=8.5)
 
 
-# ─────────────────────────────────────────────
-#  STATIC PANELS 1–3
-# ─────────────────────────────────────────────
-
+# ── Panel 1: Salary ──────────────────────────
 style_ax(ax1)
-ax1.plot(S_range, pay_salary, color=C_SALARY, lw=2.8, zorder=3,
-         label=f"Salary = ${salary:,.0f}")
-ax1.fill_between(S_range, 0, pay_salary, color=C_SALARY, alpha=0.07)
-ax1.set_title("① Salary", color="white", fontsize=12, fontweight="bold", pad=8)
-ax1.text(0.5, 1.01, "Fixed — no link to stock performance",
-         transform=ax1.transAxes, ha="center", fontsize=8, color="#777", style="italic")
+ax1.plot(S_range, pay_salary, color=C_SALARY, lw=2.5, zorder=3,
+         label=f"Salary ${salary:,.0f}/yr")
+ax1.fill_between(S_range, 0, pay_salary, color=C_SALARY, alpha=0.08)
+ax1.set_title("① Salary", color="white", fontsize=11, fontweight="bold", pad=8)
+ax1.text(0.5, 1.01,
+         f"${salary:,.0f}/yr × {years:.1f} yrs = ${salary*years:,.0f}  fixed",
+         transform=ax1.transAxes, ha="center", fontsize=8,
+         color="#777", style="italic")
 ax1.legend(facecolor=PANEL_BG, edgecolor="#333", labelcolor=TEXT_CLR, fontsize=8)
 
+
+# ── Panel 2: RSU step payoff ──────────────────
 style_ax(ax2)
-ax2.plot(S_range, pay_rsu_unit, color=C_RSU, lw=2.8, zorder=3, label="RSU (1 share)")
-ax2.fill_between(S_range, 0, pay_rsu_unit, color=C_RSU, alpha=0.07)
-ax2.set_title("② Restricted Stock Grant — Per Share", color="white",
-              fontsize=12, fontweight="bold", pad=8)
-ax2.text(0.5, 1.01, "Payoff = Sₜ   (you feel gains AND losses)",
-         transform=ax2.transAxes, ha="center", fontsize=8, color="#777", style="italic")
-ax2.legend(facecolor=PANEL_BG, edgecolor="#333", labelcolor=TEXT_CLR, fontsize=8)
 
+# Shade each activated tranche region
+cumul_rsu = np.zeros_like(S_range)
+tranche_colors = [TIER_COLORS[2], TIER_COLORS[3], TIER_COLORS[4]]
+for j, tr in enumerate(rsu_tranches):
+    activated    = np.where(S_range >= tr["K"], n_per_tranche * S_range, 0.0)
+    ax2.fill_between(S_range, cumul_rsu, cumul_rsu + activated,
+                     color=tranche_colors[j], alpha=0.18, zorder=1)
+    ax2.plot(S_range, cumul_rsu + activated,
+             color=tranche_colors[j], lw=1.4, ls="--", zorder=2,
+             label=f"Tranche {j+1}  (Tier {tr['tier']} +{tr['pct']:.0f}%  "
+                   f"K=${tr['K']:,.0f})")
+    ax2.axvline(tr["K"], color=tranche_colors[j], lw=0.9, ls=":", alpha=0.5)
+    # Label the step
+    ax2.text(tr["K"] + S * 0.01,
+             (cumul_rsu + activated)[np.searchsorted(S_range, tr["K"])] * 0.5,
+             f"+{n_per_tranche:.0f} sh", color=tranche_colors[j],
+             fontsize=7.5, va="center", alpha=0.9)
+    cumul_rsu = cumul_rsu + activated
+
+ax2.plot(S_range, pay_rsu, color=C_RSU, lw=2.5, zorder=3,
+         label=f"Total RSU ({n_rsu:,} shares)")
+ax2.set_title(f"② RSU Grant  —  {n_rsu:,} shares  [Performance Vesting]",
+              color="white", fontsize=11, fontweight="bold", pad=8)
+ax2.text(0.5, 1.01,
+         f"3 tranches of {n_per_tranche:.0f} sh, vest at Tier 3/4/5 targets "
+         f"after {T_rsu:.0f} yr min",
+         transform=ax2.transAxes, ha="center", fontsize=8,
+         color="#777", style="italic")
+ax2.legend(facecolor=PANEL_BG, edgecolor="#333", labelcolor=TEXT_CLR,
+           fontsize=7.5, loc="upper left")
+
+
+# ── Panel 3: Step-ladder options ─────────────
 style_ax(ax3)
-ax3.plot(S_range, pay_opt_unit, color=C_OPTION, lw=2.8, zorder=3, label=f"Call (K=${K:,.0f})")
-ax3.fill_between(S_range, 0, pay_opt_unit, color=C_OPTION, alpha=0.07)
-ax3.axvline(K, color=C_OPTION, lw=0.9, ls="--", alpha=0.45, label=f"K=${K:,.0f} (ATM)")
-ax3.set_title("③ ATM Call Option — Per Option", color="white",
-              fontsize=12, fontweight="bold", pad=8)
-ax3.text(0.5, 1.01, f"Payoff = max(Sₜ − K, 0)",
-         transform=ax3.transAxes, ha="center", fontsize=8, color="#777", style="italic")
-ax3.legend(facecolor=PANEL_BG, edgecolor="#333", labelcolor=TEXT_CLR, fontsize=8)
+for i, t in enumerate(tiers):
+    ind = np.maximum(S_range - t["K"], 0) * n_opt_per_tier
+    ax3.plot(S_range, ind, color=TIER_COLORS[i], lw=1.2, ls="--", alpha=0.5,
+             label=f"T{i+1} +{t['pct']:.0f}%  K=${t['K']:,.0f}"
+                   + (" ▲RSU" if i in rsu_tier_indices else ""))
+    ax3.axvline(t["K"], color=TIER_COLORS[i], lw=0.7, ls=":", alpha=0.4)
+
+ax3.plot(S_range, pay_options, color=C_OPT_CUM, lw=2.5, zorder=3,
+         label="Cumulative (all unlocked)")
+
+ymax_opt = pay_options.max() * 1.05
+for i, t in enumerate(tiers):
+    nxt_K = tiers[i + 1]["K"] if i + 1 < len(tiers) else S_range[-1]
+    mask  = (S_range >= t["K"]) & (S_range < nxt_K)
+    ax3.fill_between(S_range, 0, pay_options, where=mask,
+                     color=TIER_COLORS[i], alpha=0.10, zorder=1)
+    rsu_tag = "▲" if i in rsu_tier_indices else ""
+    ax3.text(t["K"] + S * 0.01, ymax_opt * 0.95,
+             f"{rsu_tag}+{t['pct']:.0f}%",
+             color=TIER_COLORS[i], fontsize=7.5, va="top")
+
+ax3.set_title(f"③ Step-Ladder Options  —  {n_opt_per_tier:,}/tier × 5 tiers",
+              color="white", fontsize=11, fontweight="bold", pad=8)
+ax3.text(0.5, 1.01,
+         f"▲ = also unlocks RSU tranche  |  "
+         f"σ={sigma*100:.0f}%  r={r*100:.0f}%  T={T:.2f}yr",
+         transform=ax3.transAxes, ha="center", fontsize=7.5,
+         color="#777", style="italic")
+ax3.legend(facecolor=PANEL_BG, edgecolor="#333", labelcolor=TEXT_CLR,
+           fontsize=7.5, loc="upper left")
 
 
-# ─────────────────────────────────────────────
-#  INTERACTIVE PANEL 4
-# ─────────────────────────────────────────────
-
+# ── Panel 4: Total package ────────────────────
 style_ax(ax4)
-ax4.axvline(K, color=C_OPTION, lw=0.9, ls="--", alpha=0.35)
+ax4.fill_between(S_range, 0, pay_salary,
+                 color=C_SALARY, alpha=0.20, zorder=1, label="Salary")
+ax4.fill_between(S_range, pay_salary, pay_salary + pay_other,
+                 color=C_OTHER, alpha=0.20, zorder=1, label="Other")
+ax4.fill_between(S_range, pay_salary + pay_other,
+                 pay_salary + pay_other + pay_rsu,
+                 color=C_RSU, alpha=0.20, zorder=1,
+                 label="RSU (performance steps)")
+ax4.fill_between(S_range, pay_salary + pay_other + pay_rsu,
+                 pay_package,
+                 color=C_OPT_CUM, alpha=0.20, zorder=1, label="Options (5 tiers)")
+ax4.plot(S_range, pay_package, color=C_PACKAGE, lw=2.5, zorder=3,
+         label="Total package")
+ax4.axhline(cash_total, color=C_SALARY, lw=0.9, ls="--", alpha=0.5,
+            label=f"Fixed floor ${cash_total:,.0f}")
 
-pay0 = package_payoff(n_rsu_init, n_opt_init)
-line_pkg,  = ax4.plot(S_range, pay0, color=C_PACKAGE, lw=2.8, zorder=3)
-fill_ref   = [ax4.fill_between(S_range, salary, pay0,
-                               color=C_PACKAGE, alpha=0.08, zorder=1)]
-ax4.axhline(salary, color=C_SALARY, lw=1.1, ls="--", alpha=0.6,
-            label=f"Salary = ${salary:,.0f}")
+for i, t in enumerate(tiers):
+    ax4.axvline(t["K"], color=TIER_COLORS[i], lw=0.7, ls=":", alpha=0.4)
 
-title4 = ax4.set_title("", color="white", fontsize=11, fontweight="bold", pad=8)
-sub4   = ax4.text(0.5, 1.01, "", transform=ax4.transAxes,
-                  ha="center", fontsize=8, color="#777", style="italic")
-ax4.legend(facecolor=PANEL_BG, edgecolor="#333", labelcolor=TEXT_CLR, fontsize=8)
-
-def refresh_title(n_rsu, n_opt):
-    rsu_val = n_rsu * S
-    opt_val = n_opt * S * 0.1   # rough proxy for display only
-    title4.set_text(f"④ Your Package  —  {n_rsu:,} RSUs  +  {n_opt:,} Options  +  Salary")
-    sub4.set_text(f"Salary ${salary:,.0f}  +  {n_rsu:,} × RSU  +  {n_opt:,} × ATM Call")
-
-refresh_title(n_rsu_init, n_opt_init)
-
-
-# ─────────────────────────────────────────────
-#  ALLOCATION BAR UPDATER
-# ─────────────────────────────────────────────
-
-def refresh_alloc_bar():
-    vals = [sl.val for sl in alloc_sliders]
-    total = sum(vals)
-
-    left = 0
-    for i, p in enumerate(vals):
-        bar_patches[i].set_x(left)
-        w = (p / total * 100) if total > 0 else 0
-        bar_patches[i].set_width(w)
-        left += w
-
-    color = "#2ecc71" if abs(total - 100) < 0.6 else "#e74c3c"
-    bar_total_text.set_text(f"Total: {total:.1f}%")
-    bar_total_text.set_color(color)
-
-    parts = [f"{ALLOC_LABELS[i]}: {vals[i]:.1f}%" for i in range(4)]
-    bar_legend_text.set_text("   |   ".join(parts))
-    bar_legend_text.set_color("#aaaaaa")
-
-refresh_alloc_bar()
+ax4.set_title("④ Total Compensation Package", color="white",
+              fontsize=11, fontweight="bold", pad=8)
+ax4.text(0.5, 1.01,
+         f"Salary + Other + RSU steps (T3/4/5) + {n_opt_per_tier:,}×5 Options",
+         transform=ax4.transAxes, ha="center", fontsize=8,
+         color="#777", style="italic")
+ax4.legend(facecolor=PANEL_BG, edgecolor="#333", labelcolor=TEXT_CLR,
+           fontsize=7.5, loc="upper left")
 
 
-# ─────────────────────────────────────────────
-#  UPDATE FUNCTIONS
-# ─────────────────────────────────────────────
+# ── Panel 5: Grant-date FV bar ────────────────
+ax5.set_facecolor(PANEL_BG)
+for sp in ["top", "right"]:
+    ax5.spines[sp].set_visible(False)
+for sp in ["bottom", "left"]:
+    ax5.spines[sp].set_color(AXIS_CLR)
+ax5.tick_params(colors=TEXT_CLR, labelsize=8.5)
+ax5.grid(True, axis="y", color=GRID_CLR, lw=0.5, zorder=0)
+ax5.set_axisbelow(True)
+ax5.set_title("⑤ Total Compensation — Grant-Date Fair Value Breakdown",
+              color="white", fontsize=11, fontweight="bold", pad=8)
 
-_updating = [False]   # guard against recursive slider↔textbox callbacks
+components = {
+    f"Salary\n×{years:.1f} yrs":       (salary * years, C_SALARY),
+    f"Other\n×{years:.1f} yrs":        (other  * years, C_OTHER),
+}
+# RSU tranches individually
+for j, tr in enumerate(rsu_tranches):
+    components[f"RSU T{j+1}\n+{tr['pct']:.0f}% (T{tr['tier']})"] = \
+        (tr["pv"], tranche_colors[j])
+# Option tiers
+for i, t in enumerate(tiers):
+    components[f"Opts T{i+1}\n+{t['pct']:.0f}%"] = (t["grant_val"], TIER_COLORS[i])
 
-def update_package(val=None):
-    if _updating[0]:
-        return
-    n_rsu = int(sl_rsu.val)
-    n_opt = int(sl_opt.val)
-    pay   = package_payoff(n_rsu, n_opt)
+labels   = list(components.keys())
+values   = [v for v, _ in components.values()]
+colors_b = [c for _, c in components.values()]
+total_gv = sum(values)
 
-    line_pkg.set_ydata(pay)
-    fill_ref[0].remove()
-    fill_ref[0] = ax4.fill_between(S_range, salary, pay,
-                                   color=C_PACKAGE, alpha=0.08, zorder=1)
+bars = ax5.bar(labels, values, color=colors_b, width=0.6,
+               edgecolor="#0f1117", linewidth=0.8, zorder=3)
 
-    ymax = max(pay.max(), salary) * 1.10
-    ymin = min(pay.min(), 0)
-    ax4.set_ylim(ymin, ymax)
-    refresh_title(n_rsu, n_opt)
-    fig.canvas.draw_idle()
+for bar, val in zip(bars, values):
+    ax5.text(bar.get_x() + bar.get_width() / 2,
+             bar.get_height() + total_gv * 0.012,
+             f"${val:,.0f}", ha="center", va="bottom",
+             color=TEXT_CLR, fontsize=8, fontweight="bold")
+    pct = val / total_gv * 100
+    if bar.get_height() > total_gv * 0.035:
+        ax5.text(bar.get_x() + bar.get_width() / 2,
+                 bar.get_height() / 2,
+                 f"{pct:.1f}%", ha="center", va="center",
+                 color="white", fontsize=8, alpha=0.85)
 
-def on_sl_rsu(val):
-    _updating[0] = True
-    tb_rsu.set_val(str(int(val)))
-    _updating[0] = False
-    update_package()
+ax5.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"${x:,.0f}"))
+ax5.set_ylabel("Grant-Date Fair Value ($)", color=TEXT_CLR, fontsize=9)
+ax5.tick_params(axis="x", colors=TEXT_CLR, labelsize=7.5)
 
-def on_sl_opt(val):
-    _updating[0] = True
-    tb_opt.set_val(str(int(val)))
-    _updating[0] = False
-    update_package()
+ax5.text(0.01, 0.97,
+         f"RSU PV = (n/3) × S × N(d₁)  [asset-or-nothing BS, T={T_rsu:.1f}yr]\n"
+         f"Options = BS call price × n  [σ={sigma*100:.0f}%, r={r*100:.0f}%, T={T:.2f}yr]",
+         transform=ax5.transAxes, va="top", fontsize=7.5,
+         color="#777", style="italic")
 
-def on_tb_rsu(text):
-    if _updating[0]:
-        return
-    try:
-        v = max(0, min(int(float(text.replace(",", ""))), rsu_max))
-        _updating[0] = True
-        sl_rsu.set_val(v)
-        tb_rsu.set_val(str(v))
-        _updating[0] = False
-        update_package()
-    except ValueError:
-        pass
-
-def on_tb_opt(text):
-    if _updating[0]:
-        return
-    try:
-        v = max(0, min(int(float(text.replace(",", ""))), opt_max))
-        _updating[0] = True
-        sl_opt.set_val(v)
-        tb_opt.set_val(str(v))
-        _updating[0] = False
-        update_package()
-    except ValueError:
-        pass
-
-def on_alloc(val):
-    refresh_alloc_bar()
-    fig.canvas.draw_idle()
-
-sl_rsu.on_changed(on_sl_rsu)
-sl_opt.on_changed(on_sl_opt)
-tb_rsu.on_submit(on_tb_rsu)
-tb_opt.on_submit(on_tb_opt)
-for asl in alloc_sliders:
-    asl.on_changed(on_alloc)
-
-# Initial draw
-update_package()
+ax5.text(0.99, 0.97,
+         f"Total: ${total_gv:,.0f}",
+         transform=ax5.transAxes, ha="right", va="top",
+         color="white", fontsize=12, fontweight="bold",
+         bbox=dict(boxstyle="round,pad=0.4", fc="#2a2d3a", ec="#555", alpha=0.9))
 
 
 # ─────────────────────────────────────────────
 #  SUPER TITLE
 # ─────────────────────────────────────────────
 
-fig.text(0.5, 0.998,
-         f"Executive Compensation — Payoff Profiles  |  "
-         f"S₀=${S:,.0f}   K=${K:,.0f} (ATM)   Salary=${salary:,.0f}",
-         ha="center", va="top", color="white", fontsize=11, fontweight="bold")
+fig.suptitle(
+    f"Executive Compensation — Full Package  |  S₀=${S:,.0f}  "
+    f"σ={sigma*100:.0f}%  r={r*100:.0f}%  T_opt={T:.2f}yr  "
+    f"T_rsu≥{T_rsu:.0f}yr  "
+    f"Tiers: {' → '.join(f'+{p:.0f}%' for p in pcts)}",
+    color="white", fontsize=9.5, fontweight="bold", y=1.01
+)
 
-plt.savefig("comp_payoff_interactive.png", dpi=150,
-            bbox_inches="tight", facecolor=BG)
-print("Snapshot saved → comp_payoff_interactive.png")
-print("Type a number in the box + press Enter, or drag sliders.\n")
+plt.tight_layout()
+
+outfile = "comp_full_synthesis.png"
+plt.savefig(outfile, dpi=150, bbox_inches="tight", facecolor=BG)
+print(f"\nChart saved → {outfile}\n")
 plt.show()
