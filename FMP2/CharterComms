@@ -1,7 +1,14 @@
 """
-Black-Scholes: European Call Option vs RSU Payoff Comparison
-============================================================
-No dividends. European exercise only.
+Black-Scholes: 5-Tier Option Package vs RSU Comparison
+=======================================================
+European call, no dividends.
+Same number of options granted at each of 5 strike tiers.
+
+Charts:
+  1 (top-left)  — Original: raw payoff per unit at expiry (single option vs 1 RSU)
+  2 (top-right) — Original: equal grant-value comparison (scaled options vs 1 RSU)
+  3 (bot-left)  — New: all 5 tier payoffs per unit vs RSU
+  4 (bot-right) — New: total package payoff (n_options × each tier) vs RSU
 """
 
 import numpy as np
@@ -12,7 +19,7 @@ import matplotlib.ticker as mticker
 
 
 # ─────────────────────────────────────────────
-#  PARAMETER INPUTS
+#  INPUT HELPERS
 # ─────────────────────────────────────────────
 
 def get_float(prompt, positive=True):
@@ -28,6 +35,19 @@ def get_float(prompt, positive=True):
         except ValueError:
             print(f"   ✗ '{raw}' is not a valid number. Try again.")
 
+def get_int(prompt):
+    """Prompt until user enters a valid positive integer."""
+    while True:
+        raw = input(prompt).strip().replace(",", "")
+        try:
+            val = int(raw)
+            if val <= 0:
+                print("   ✗ Must be a positive integer. Try again.")
+                continue
+            return val
+        except ValueError:
+            print(f"   ✗ '{raw}' is not a valid integer. Try again.")
+
 def get_date(prompt):
     """Prompt until user enters a valid YYYY-MM-DD date."""
     while True:
@@ -35,22 +55,26 @@ def get_date(prompt):
         try:
             return datetime.strptime(raw, "%Y-%m-%d")
         except ValueError:
-            print("   ✗ Invalid date. Use YYYY-MM-DD format (e.g. 2026-03-31).")
+            print("   ✗ Invalid date. Use YYYY-MM-DD (e.g. 2026-03-31).")
 
-print("\n" + "=" * 52)
-print("   Black-Scholes: Option vs RSU Payoff Analyzer")
-print("=" * 52)
-print("   Enter numbers without commas (e.g. 1000 not 1,000)")
-print("   Rates as decimals           (e.g. 0.05  for 5%)")
-print("=" * 52)
 
-S     = get_float("\n Current stock price (S)              : 203.81 ")
-K     = get_float(" Exercise / strike price (K)          : 264.953 ")
-r     = get_float(" Risk-free rate, annual (0.05 = 5%)   : .027 ", positive=False)
-sigma = get_float(" Volatility, annual    (0.25 = 25%)   : .2 ")
+# ─────────────────────────────────────────────
+#  MAIN INPUTS
+# ─────────────────────────────────────────────
 
-today    = get_date(" Today's date          (YYYY-MM-DD)   : 2016-03-04 ")
-maturity = get_date(" Maturity date         (YYYY-MM-DD)   : 2022-03-04 ")
+print("\n" + "=" * 58)
+print("   Black-Scholes: 5-Tier Option vs RSU Payoff Analyzer")
+print("=" * 58)
+print("   Numbers without commas  (e.g. 1000 not 1,000)")
+print("   Rates as decimals        (e.g. 0.05 for 5%)")
+print("=" * 58)
+
+S     = get_float("\n Current stock price (S)              : ")
+r     = get_float(" Risk-free rate, annual (0.05 = 5%)   : ", positive=False)
+sigma = get_float(" Volatility, annual    (0.25 = 25%)   : ")
+
+today    = get_date(" Today's date          (YYYY-MM-DD)   : ")
+maturity = get_date(" Maturity date         (YYYY-MM-DD)   : ")
 T        = (maturity - today).days / 365.0
 
 while T <= 0:
@@ -59,6 +83,20 @@ while T <= 0:
     T        = (maturity - today).days / 365.0
 
 print(f"\n → Time to maturity: {T:.4f} years  ({(maturity - today).days} days)\n")
+
+n_options = get_int(" Number of options per tier (same for all 5): ")
+
+print(f"\n Enter 5 strike prices (tip: current S = ${S:,.2f})")
+print(f" Suggested range: ${S*0.7:,.2f} (deep ITM) → ${S*1.3:,.2f} (deep OTM)\n")
+
+TIER_LABELS = [
+    "Tier 1 — deep ITM",
+    "Tier 2 — ITM     ",
+    "Tier 3 — ATM     ",
+    "Tier 4 — OTM     ",
+    "Tier 5 — deep OTM",
+]
+strikes = [get_float(f"   Strike {i+1}  {lbl} : ") for i, lbl in enumerate(TIER_LABELS)]
 
 
 # ─────────────────────────────────────────────
@@ -71,7 +109,6 @@ def black_scholes_call(S, K, T, r, sigma):
     d2 = d1 - sigma * np.sqrt(T)
 
     price = S * norm.cdf(d1) - K * np.exp(-r * T) * norm.cdf(d2)
-
     delta = norm.cdf(d1)
     gamma = norm.pdf(d1) / (S * sigma * np.sqrt(T))
     vega  = S * norm.pdf(d1) * np.sqrt(T) / 100
@@ -80,128 +117,172 @@ def black_scholes_call(S, K, T, r, sigma):
     rho   = K * T * np.exp(-r * T) * norm.cdf(d2) / 100
 
     greeks = {
-        "Delta": delta,
-        "Gamma": gamma,
-        "Vega (per 1% vol)":  vega,
-        "Theta (per day)":    theta,
-        "Rho (per 1% rate)":  rho,
+        "Delta":            delta,
+        "Gamma":            gamma,
+        "Vega (per 1% vol)": vega,
+        "Theta (per day)":  theta,
+        "Rho (per 1% rate)": rho,
     }
     return price, d1, d2, greeks
 
 
-option_price, d1, d2, greeks = black_scholes_call(S, K, T, r, sigma)
+# ─────────────────────────────────────────────
+#  COMPUTE ALL TIERS
+# ─────────────────────────────────────────────
+
+tiers = []
+for K_i in strikes:
+    price, d1, d2, greeks = black_scholes_call(S, K_i, T, r, sigma)
+    tiers.append({
+        "K":         K_i,
+        "price":     price,
+        "grant_val": price * n_options,
+        "d1": d1, "d2": d2,
+        "greeks":    greeks,
+        "moneyness": S / K_i,
+    })
+
+# ATM tier = Tier 3 (index 2) — used for original Chart 1 & 2 reference
+atm = tiers[2]
+rsu_unit_val   = S                    # value of 1 RSU today
+rsu_total_val  = S * n_options        # value of n RSUs today
 
 
 # ─────────────────────────────────────────────
-#  PRINT RESULTS
+#  CONSOLE SUMMARY
 # ─────────────────────────────────────────────
 
-print("─" * 52)
-print(f"  INPUTS")
-print(f"    Current price (S)  : ${S:,.2f}")
-print(f"    Strike price  (K)  : ${K:,.2f}")
-print(f"    Risk-free rate (r) : {r*100:.2f}%")
-print(f"    Volatility (σ)     : {sigma*100:.2f}%")
-print(f"    Time to maturity   : {T:.4f} yrs")
-print("─" * 52)
-print(f"  BLACK-SCHOLES OUTPUTS")
-print(f"    d1                 :  {d1:.4f}")
-print(f"    d2                 :  {d2:.4f}")
-print(f"    N(d1)              :  {norm.cdf(d1):.4f}")
-print(f"    N(d2)              :  {norm.cdf(d2):.4f}")
-print(f"    ► Call Option Price:  ${option_price:.4f}")
-print("─" * 52)
-print(f"  GREEKS")
-for name, val in greeks.items():
-    print(f"    {name:<22}: {val:+.6f}")
-print("─" * 52)
+print("\n" + "=" * 70)
+print(f"  INPUTS:  S=${S:,.2f}  r={r*100:.1f}%  σ={sigma*100:.1f}%  T={T:.3f}yr  "
+      f"n={n_options:,}/tier")
+print("=" * 70)
+print(f"\n  {'Tier':<6} {'Strike':>8} {'Moneyness':>10} {'BS Price':>10} "
+      f"{'Grant Value':>13} {'Delta':>8} {'Vega':>8}")
+print("  " + "─" * 68)
 
-# RSU comparison: value = S_T (current price, assumed as reference)
-rsu_value = S
-print(f"\n  GRANT VALUE COMPARISON (at today's price)")
-print(f"    RSU value (1 share)      : ${rsu_value:.4f}")
-print(f"    Call option (BS) value   : ${option_price:.4f}")
-print(f"    Options needed to match  :  {rsu_value / option_price:.2f}x RSU count")
-print("─" * 52 + "\n")
+for i, t in enumerate(tiers):
+    print(f"  T{i+1:<5} ${t['K']:>7,.2f} {t['moneyness']:>9.3f}x "
+          f"${t['price']:>9,.4f} ${t['grant_val']:>12,.2f} "
+          f"{t['greeks']['Delta']:>8.4f} {t['greeks']['Vega (per 1% vol)']:>8.4f}")
+
+print("  " + "─" * 68)
+print(f"  {'RSU':<6} {'—':>8} {'1.000x':>10} ${S:>9,.4f} ${rsu_total_val:>12,.2f}  (linear)")
+print("=" * 70)
+
+print(f"\n  GREEKS DETAIL PER TIER\n")
+for i, t in enumerate(tiers):
+    print(f"  Tier {i+1}  K=${t['K']:,.2f}  d1={t['d1']:.4f}  d2={t['d2']:.4f}")
+    for gname, gval in t["greeks"].items():
+        print(f"    {gname:<22}: {gval:+.6f}")
+    print()
+print("=" * 70 + "\n")
 
 
 # ─────────────────────────────────────────────
-#  PAYOFF CHART: OPTION vs RSU at EXPIRY
+#  CHARTS
 # ─────────────────────────────────────────────
 
-S_range = np.linspace(S * 0.2, S * 2.2, 500)
+TIER_COLORS = ["#e74c3c", "#e67e22", "#2ecc71", "#3498db", "#9b59b6"]
+RSU_COLOR   = "#f7931e"
+ATM_COLOR   = "#00d4aa"
+STRIKE_CLR  = "#ff4c4c"
+CURR_CLR    = "#888888"
 
-# At expiry: option payoff = max(S_T - K, 0)
-option_payoff = np.maximum(S_range - K, 0)
+S_range = np.linspace(S * 0.2, S * 2.5, 600)
 
-# RSU payoff = S_T (linear, always positive)
-rsu_payoff = S_range
-
-# Net profit (subtract cost of grant at today's price)
-option_profit = option_payoff  # for exec: no upfront cost, just forfeited if OTM
-rsu_profit    = rsu_payoff     # RSU: exec gets the share value regardless
-
-fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+fig, axes = plt.subplots(2, 2, figsize=(16, 12))
 fig.patch.set_facecolor("#0f1117")
 
-colors = {
-    "option": "#00d4aa",
-    "rsu":    "#f7931e",
-    "strike": "#ff4c4c",
-    "current": "#aaaaaa",
-    "zero":   "#444444",
-}
-
-for ax in axes:
+def style_ax(ax):
     ax.set_facecolor("#1a1d27")
-    ax.tick_params(colors="#aaaaaa")
-    ax.spines["bottom"].set_color("#333")
-    ax.spines["left"].set_color("#333")
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
+    ax.tick_params(colors="#aaaaaa", labelsize=9)
+    for sp in ["bottom", "left"]:
+        ax.spines[sp].set_color("#333")
+    for sp in ["top", "right"]:
+        ax.spines[sp].set_visible(False)
     ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"${x:,.0f}"))
     ax.xaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"${x:,.0f}"))
+    ax.axhline(0, color="#444", lw=0.8)
+    ax.axvline(S, color=CURR_CLR, lw=1.0, ls=":", label=f"S = ${S:,.0f}")
 
-# ── Left: Payoff at expiry ──────────────────────
-ax1 = axes[0]
-ax1.plot(S_range, option_payoff, color=colors["option"], lw=2.2, label="Call Option payoff")
-ax1.plot(S_range, rsu_payoff,    color=colors["rsu"],    lw=2.2, label="RSU payoff")
-ax1.axvline(K, color=colors["strike"],  lw=1.2, ls="--", label=f"Strike K = ${K:,.0f}")
-ax1.axvline(S, color=colors["current"], lw=1.0, ls=":",  label=f"Today's S = ${S:,.0f}")
-ax1.axhline(0, color=colors["zero"],    lw=0.8)
-ax1.set_title("Payoff at Expiry", color="white", fontsize=13, pad=12)
-ax1.set_xlabel("Stock price at expiry (Sₜ)", color="#aaaaaa")
-ax1.set_ylabel("Payoff ($)", color="#aaaaaa")
+
+# ── Chart 1 (top-left): Original — single ATM option vs 1 RSU ────────────
+ax1 = axes[0, 0]
+style_ax(ax1)
+
+atm_payoff  = np.maximum(S_range - atm["K"], 0)
+rsu_1_payoff = S_range
+
+ax1.plot(S_range, atm_payoff,   color=ATM_COLOR, lw=2.2, label=f"ATM Call (K=${atm['K']:,.0f})")
+ax1.plot(S_range, rsu_1_payoff, color=RSU_COLOR,  lw=2.2, label="RSU (1 share)")
+ax1.axvline(atm["K"], color=STRIKE_CLR, lw=1.2, ls="--", label=f"K = ${atm['K']:,.0f}")
+ax1.set_title("① Payoff at Expiry — ATM Option vs 1 RSU", color="white", fontsize=11, pad=10)
+ax1.set_xlabel("Stock price at expiry (Sₜ)", color="#aaaaaa", fontsize=9)
+ax1.set_ylabel("Payoff ($)", color="#aaaaaa", fontsize=9)
 ax1.legend(facecolor="#1a1d27", edgecolor="#333", labelcolor="white", fontsize=9)
 
-# ── Right: Incremental advantage of options ─────
-ax2 = axes[1]
-advantage = option_payoff - option_price - (rsu_payoff - S)
-# i.e., (option net profit) minus (RSU net profit), per-unit, normalized to same grant value
 
-# Scale: assume company grants enough options to match RSU value
-n_options = rsu_value / option_price   # options per RSU
-scaled_option_profit = np.maximum(S_range - K, 0) * n_options
-scaled_rsu_profit    = S_range
+# ── Chart 2 (top-right): Original — equal grant-value comparison ──────────
+ax2 = axes[0, 1]
+style_ax(ax2)
 
-ax2.plot(S_range, scaled_option_profit, color=colors["option"], lw=2.2,
-         label=f"Options ×{n_options:.1f} (same grant value)")
-ax2.plot(S_range, scaled_rsu_profit,    color=colors["rsu"],    lw=2.2, label="1 RSU")
-ax2.axvline(K, color=colors["strike"],  lw=1.2, ls="--", label=f"Strike K = ${K:,.0f}")
-ax2.axvline(S, color=colors["current"], lw=1.0, ls=":",  label=f"Today's S = ${S:,.0f}")
-ax2.axhline(0, color=colors["zero"],    lw=0.8)
-ax2.set_title("Equal Grant Value Comparison", color="white", fontsize=13, pad=12)
-ax2.set_xlabel("Stock price at expiry (Sₜ)", color="#aaaaaa")
-ax2.set_ylabel("Executive payoff ($)", color="#aaaaaa")
+n_scaled        = rsu_unit_val / atm["price"]           # options to match 1 RSU value
+scaled_opt_pay  = np.maximum(S_range - atm["K"], 0) * n_scaled
+
+ax2.plot(S_range, scaled_opt_pay, color=ATM_COLOR, lw=2.2,
+         label=f"ATM Options ×{n_scaled:.1f}\n(= 1 RSU grant value)")
+ax2.plot(S_range, rsu_1_payoff,   color=RSU_COLOR,  lw=2.2, label="1 RSU")
+ax2.axvline(atm["K"], color=STRIKE_CLR, lw=1.2, ls="--", label=f"K = ${atm['K']:,.0f}")
+ax2.set_title("② Equal Grant-Value Comparison — ATM Options vs RSU", color="white", fontsize=11, pad=10)
+ax2.set_xlabel("Stock price at expiry (Sₜ)", color="#aaaaaa", fontsize=9)
+ax2.set_ylabel("Executive payoff ($)", color="#aaaaaa", fontsize=9)
 ax2.legend(facecolor="#1a1d27", edgecolor="#333", labelcolor="white", fontsize=9)
 
+
+# ── Chart 3 (bot-left): 5 tiers — per-unit payoff ────────────────────────
+ax3 = axes[1, 0]
+style_ax(ax3)
+
+for i, t in enumerate(tiers):
+    payoff = np.maximum(S_range - t["K"], 0)
+    ax3.plot(S_range, payoff, color=TIER_COLORS[i], lw=2.0,
+             label=f"T{i+1} K=${t['K']:,.0f} ({t['moneyness']:.2f}x)")
+    ax3.axvline(t["K"], color=TIER_COLORS[i], lw=0.6, ls="--", alpha=0.45)
+
+ax3.plot(S_range, S_range, color=RSU_COLOR, lw=2.0, ls="-.", label="RSU (1 share)")
+ax3.set_title("③ All 5 Tiers — Payoff per Unit at Expiry", color="white", fontsize=11, pad=10)
+ax3.set_xlabel("Stock price at expiry (Sₜ)", color="#aaaaaa", fontsize=9)
+ax3.set_ylabel("Payoff per option / share ($)", color="#aaaaaa", fontsize=9)
+ax3.legend(facecolor="#1a1d27", edgecolor="#333", labelcolor="white", fontsize=8, loc="upper left")
+
+
+# ── Chart 4 (bot-right): 5 tiers — total package payoff ─────────────────
+ax4 = axes[1, 1]
+style_ax(ax4)
+
+for i, t in enumerate(tiers):
+    total = np.maximum(S_range - t["K"], 0) * n_options
+    ax4.plot(S_range, total, color=TIER_COLORS[i], lw=2.0,
+             label=f"T{i+1} K=${t['K']:,.0f}  GV=${t['grant_val']:,.0f}")
+    ax4.axvline(t["K"], color=TIER_COLORS[i], lw=0.6, ls="--", alpha=0.45)
+
+ax4.plot(S_range, S_range * n_options, color=RSU_COLOR, lw=2.0, ls="-.",
+         label=f"RSU ×{n_options:,}  GV=${rsu_total_val:,.0f}")
+ax4.set_title(f"④ All 5 Tiers — Total Package Payoff (×{n_options:,} each)",
+              color="white", fontsize=11, pad=10)
+ax4.set_xlabel("Stock price at expiry (Sₜ)", color="#aaaaaa", fontsize=9)
+ax4.set_ylabel("Total executive payoff ($)", color="#aaaaaa", fontsize=9)
+ax4.legend(facecolor="#1a1d27", edgecolor="#333", labelcolor="white", fontsize=8, loc="upper left")
+
+
 plt.suptitle(
-    f"European Call Option vs RSU  |  S=${S:,.0f}  K=${K:,.0f}  σ={sigma*100:.0f}%  r={r*100:.0f}%  T={T:.2f}yr",
+    f"5-Tier Option Package vs RSU  |  S=${S:,.0f}  σ={sigma*100:.0f}%  "
+    f"r={r*100:.0f}%  T={T:.2f}yr  n={n_options:,}/tier",
     color="white", fontsize=12, y=1.01
 )
 plt.tight_layout()
 
-outfile = "bs_rsu_payoff.png"
+outfile = "bs_rsu_5tier_payoff.png"
 plt.savefig(outfile, dpi=150, bbox_inches="tight", facecolor=fig.get_facecolor())
 print(f"Chart saved → {outfile}\n")
 plt.show()
