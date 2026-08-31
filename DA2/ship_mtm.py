@@ -139,6 +139,49 @@ def resolve_columns(df: pd.DataFrame, overrides: dict) -> dict:
     return mapping
 
 
+def parse_dates(s: pd.Series, quiet: bool = False) -> pd.Series:
+    """Parse a sale-date column that may not hold real dates.
+
+    Three cases bite in practice:
+      - year only (2008), which pandas otherwise reads as nanoseconds since 1970
+        and silently collapses every sale onto the same instant
+      - Excel serial numbers (39569), left over from a raw export
+      - ordinary date strings
+    """
+    num = pd.to_numeric(s, errors="coerce")
+    nz = num.dropna()
+
+    txt = s.astype(str).str.strip()
+
+    if txt.str.fullmatch(r"[A-Za-z]{3}-\d{2}").all():
+        return pd.to_datetime(txt, format="%b-%y", errors="coerce")
+
+    if len(nz) and len(nz) >= 0.9 * len(s.dropna()):
+        if nz.between(1900, 2100).all() and (nz % 1 == 0).all():
+            if not quiet:
+                print("[note] sale dates are year-only; treating each as 1 January "
+                      "of that year")
+            return pd.to_datetime(num.astype("Int64").astype(str), format="%Y",
+                                  errors="coerce")
+        if nz.between(20000, 60000).all():
+            if not quiet:
+                print("[note] sale dates look like Excel serial numbers; converting")
+            return pd.Timestamp("1899-12-30") + pd.to_timedelta(num, unit="D")
+
+    txt = s.astype(str).str.strip()
+    if txt.str.fullmatch(r"(19|20)\d{2}(\.0)?").fillna(False).all():
+        if not quiet:
+            print("[note] sale dates are year-only; treating each as 1 January "
+                  "of that year")
+        return pd.to_datetime(txt.str.slice(0, 4), format="%Y", errors="coerce")
+
+    out = pd.to_datetime(s, errors="coerce")
+    n_bad = int(out.isna().sum() - s.isna().sum())
+    if n_bad > 0 and not quiet:
+        print(f"[warn] {n_bad} sale date(s) could not be read and will be dropped")
+    return out
+
+
 def to_number(s: pd.Series) -> pd.Series:
     """Strip $ , % and stray spaces, then coerce to float."""
     if pd.api.types.is_numeric_dtype(s):
@@ -215,7 +258,7 @@ def load(path: str, overrides: dict, dwt_units: str, quiet: bool,
         print()
 
     d = pd.DataFrame()
-    d["sale_date"] = pd.to_datetime(raw[m["sale_date"]], errors="coerce")
+    d["sale_date"] = parse_dates(raw[m["sale_date"]], quiet)
     d["price_usd_m"] = to_number(raw[m["price"]])
     d["dwt"] = to_number(raw[m["dwt"]])
     d["index_12m"] = to_number(raw[m["index"]])
@@ -513,18 +556,27 @@ def make_charts(d, fits, subject, basis, scrap, alpha, path, near=None):
 
     # Where the model misses, over time
     ax = axes[1, 1]
-    sc = ax.scatter(d["sale_date"], resid_pct, s=28, c=d["age"], cmap="viridis",
+    # Decimal years, not datetimes: matplotlib's date locator blows up when a
+    # file has year-only dates and the axis span collapses.
+    xt = d["sale_year"].to_numpy()
+    sc = ax.scatter(xt, resid_pct, s=28, c=d["age"], cmap="viridis",
                     alpha=.85, edgecolors="none")
     ax.axhline(0, color=RED, lw=1.2)
     ax.axhline(30, color=GREY, lw=.8, ls=":")
     ax.axhline(-30, color=GREY, lw=.8, ls=":")
-    ax.axvline(basis["date"], color=BLUE, lw=1.4, ls="--", label="your as-of date")
+    as_of_year = basis["date"].year + (basis["date"].month - 1) / 12.0
+    ax.axvline(as_of_year, color=BLUE, lw=1.4, ls="--", label="your as-of date")
+    span = float(np.nanmax(xt) - np.nanmin(xt)) if len(xt) else 0.0
+    pad = max(span * 0.05, 0.5)
+    ax.set_xlim(min(float(np.nanmin(xt)), as_of_year) - pad,
+                max(float(np.nanmax(xt)), as_of_year) + pad)
+    ax.xaxis.set_major_formatter(matplotlib.ticker.FormatStrFormatter("%d"))
     ax.set_title("Where the model misses, over time\n"
                  "(above 0 = sold for more than the model says)", fontsize=10)
+    ax.set_xlabel("year of sale")
     ax.set_ylabel("actual vs model (%)")
     plt.colorbar(sc, ax=ax, label="age at sale")
     ax.legend(fontsize=8); ax.grid(alpha=.25, lw=.6)
-    ax.tick_params(axis="x", rotation=30)
 
     # Sensitivity of the mark to the market
     ax = axes[1, 2]
@@ -544,7 +596,10 @@ def make_charts(d, fits, subject, basis, scrap, alpha, path, near=None):
     ax.set_xlabel("12-month composite index"); ax.set_ylabel("value ($m)")
     ax.grid(alpha=.25, lw=.6)
 
-    fig.tight_layout(rect=[0, 0, 1, 0.955])
+    try:
+        fig.tight_layout(rect=[0, 0, 1, 0.955])
+    except Exception:
+        fig.subplots_adjust(top=0.90, hspace=0.42, wspace=0.28)
     fig.savefig(path, dpi=140)
     plt.close(fig)
     return path
@@ -813,7 +868,19 @@ def main(argv=None):
     if not a.no_age2:
         terms.insert(1, "age2")
     if not a.drop_sale_year:
-        terms.append("sale_year")
+        if d["sale_year"].nunique() < 2:
+            print("[note] every comp shares one sale year, so sale_year carries no "
+                  "information. Dropping it.\n", file=sys.stderr)
+        else:
+            terms.append("sale_year")
+    for t in list(terms):
+        if d[t].nunique() < 2:
+            print(f"[note] '{t}' is the same for every comp; dropping it from the "
+                  f"model.\n", file=sys.stderr)
+            terms.remove(t)
+    if not terms:
+        raise SystemExit("[error] none of the drivers vary across your comps. "
+                         "Check the file loaded correctly.")
     k = len(terms) + 1
     if len(d) < 10 * k:
         print(f"[warn] {len(d)} comps for {k} parameters. Under ~{10 * k} the multiple "
@@ -843,6 +910,19 @@ def main(argv=None):
         idx, idx_src = float(a.index_12m), "you set it"
     else:
         idx, idx_src = index_at(d, vdate)
+
+    # Extrapolation guard: a hedonic model is only trustworthy inside the range
+    # of the data it learned from.
+    for label, val, col, fmt in (("age", age, d["age"], "{:.1f} yrs"),
+                                 ("DWT", dwt, d["dwt"], "{:,.0f}"),
+                                 ("index", idx, d["index_12m"], "{:,.0f}")):
+        lo_c, hi_c = float(col.min()), float(col.max())
+        if not (lo_c <= val <= hi_c):
+            far = (val / hi_c if val > hi_c else lo_c / max(val, 1e-9))
+            print(f"[warn] your {label} of {fmt.format(val)} is outside your comps "
+                  f"({fmt.format(lo_c)} to {fmt.format(hi_c)}"
+                  f"{f', {far:.1f}x beyond' if far > 1.5 else ''}). "
+                  f"The model is guessing there.", file=sys.stderr)
 
     subject = {"age": age, "age2": age ** 2, "ln_dwt": np.log(dwt),
                "ln_index": np.log(idx), "sale_year": sale_year}
